@@ -90,7 +90,14 @@ export const AgentDefaultsSchema = z
       .optional(),
     compaction: z
       .object({
-        mode: z.union([z.literal("default"), z.literal("safeguard")]).optional(),
+        mode: z
+          .union([
+            z.literal("default"),
+            z.literal("safeguard"),
+            z.literal("tiered"),
+            z.literal("smart"),
+          ])
+          .optional(),
         reserveTokensFloor: z.number().int().nonnegative().optional(),
         maxHistoryShare: z.number().min(0.1).max(0.9).optional(),
         memoryFlush: z
@@ -99,6 +106,26 @@ export const AgentDefaultsSchema = z
             softThresholdTokens: z.number().int().nonnegative().optional(),
             prompt: z.string().optional(),
             systemPrompt: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        tieredPath: z.string().optional(),
+        tieredCompaction: z
+          .object({
+            keepLastMessages: z.number().int().positive().optional(),
+            actionBulletPrompt: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        smartPath: z.string().optional(),
+        smartCompaction: z
+          .object({
+            keepLastMessages: z.number().int().positive().optional(),
+            actionBulletPrompt: z.string().optional(),
+            enableBoundaryDetection: z.boolean().optional(),
+            enableVectorArchive: z.boolean().optional(),
+            blurbMaxTokens: z.number().int().positive().optional(),
+            includeRecoveryInstructions: z.boolean().optional(),
           })
           .strict()
           .optional(),

@@ -67,8 +67,12 @@ function buildContextPruningExtension(params: {
   };
 }
 
-function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" {
-  return cfg?.agents?.defaults?.compaction?.mode === "safeguard" ? "safeguard" : "default";
+function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" | "tiered" | "smart" {
+  const mode = cfg?.agents?.defaults?.compaction?.mode;
+  if (mode === "safeguard") return "safeguard";
+  if (mode === "tiered") return "tiered";
+  if (mode === "smart") return "smart";
+  return "default";
 }
 
 export function buildEmbeddedExtensionPaths(params: {
@@ -79,21 +83,57 @@ export function buildEmbeddedExtensionPaths(params: {
   model: Model<Api> | undefined;
 }): string[] {
   const paths: string[] = [];
-  if (resolveCompactionMode(params.cfg) === "safeguard") {
-    const compactionCfg = params.cfg?.agents?.defaults?.compaction;
-    const contextWindowInfo = resolveContextWindowInfo({
-      cfg: params.cfg,
-      provider: params.provider,
-      modelId: params.modelId,
-      modelContextWindow: params.model?.contextWindow,
-      defaultTokens: DEFAULT_CONTEXT_TOKENS,
-    });
+  const compactionMode = resolveCompactionMode(params.cfg);
+  const compactionCfg = params.cfg?.agents?.defaults?.compaction;
+  const contextWindowInfo = resolveContextWindowInfo({
+    cfg: params.cfg,
+    provider: params.provider,
+    modelId: params.modelId,
+    modelContextWindow: params.model?.contextWindow,
+    defaultTokens: DEFAULT_CONTEXT_TOKENS,
+  });
+
+  if (compactionMode === "safeguard") {
     setCompactionSafeguardRuntime(params.sessionManager, {
       maxHistoryShare: compactionCfg?.maxHistoryShare,
       contextWindowTokens: contextWindowInfo.tokens,
     });
     paths.push(resolvePiExtensionPath("compaction-safeguard"));
+  } else if (compactionMode === "tiered") {
+    const tieredPath = compactionCfg?.tieredPath;
+    if (tieredPath) {
+      const resolvedPath = path.isAbsolute(tieredPath)
+        ? tieredPath
+        : path.join(params.cfg?.agents?.defaults?.workspace || process.cwd(), tieredPath);
+      paths.push(resolvedPath);
+    } else {
+      const workspace = params.cfg?.agents?.defaults?.workspace || process.cwd();
+      paths.push(path.join(workspace, "extensions", "tiered-compaction.js"));
+    }
+    setCompactionSafeguardRuntime(params.sessionManager, {
+      maxHistoryShare: compactionCfg?.maxHistoryShare,
+      contextWindowTokens: contextWindowInfo.tokens,
+      tieredCompaction: compactionCfg?.tieredCompaction as Record<string, unknown>,
+    });
+  } else if (compactionMode === "smart") {
+    const smartPath = compactionCfg?.smartPath;
+    if (smartPath) {
+      const resolvedPath = path.isAbsolute(smartPath)
+        ? smartPath
+        : path.join(params.cfg?.agents?.defaults?.workspace || process.cwd(), smartPath);
+      paths.push(resolvedPath);
+    } else {
+      const workspace = params.cfg?.agents?.defaults?.workspace || process.cwd();
+      paths.push(path.join(workspace, "extensions", "smart-compaction.js"));
+    }
+    setCompactionSafeguardRuntime(params.sessionManager, {
+      maxHistoryShare: compactionCfg?.maxHistoryShare,
+      contextWindowTokens: contextWindowInfo.tokens,
+      smartCompaction: compactionCfg?.smartCompaction as Record<string, unknown>,
+      tieredCompaction: compactionCfg?.tieredCompaction as Record<string, unknown>,
+    });
   }
+
   const pruning = buildContextPruningExtension(params);
   if (pruning.additionalExtensionPaths) {
     paths.push(...pruning.additionalExtensionPaths);

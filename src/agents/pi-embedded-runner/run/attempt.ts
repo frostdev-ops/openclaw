@@ -539,6 +539,68 @@ export async function runEmbeddedAttempt(
         );
       }
 
+      // Continuous degradation preprocessor — wraps streamFn to preprocess
+      // messages before every API call. Loads workspace extension dynamically.
+      try {
+        const degradationWorkspace =
+          process.env.OPENCLAW_WORKSPACE ||
+          params.config?.agents?.defaults?.workspace ||
+          process.cwd();
+        const modPath = `${degradationWorkspace}/extensions/continuous-degradation.js`;
+        const vectorModPath = `${degradationWorkspace}/extensions/vector-memory.js`;
+        const cacheBuster = `?t=${Date.now()}`;
+        const mod = await import(modPath + cacheBuster);
+        const factory = mod.createPreprocessor || mod.default?.createPreprocessor;
+
+        let vectorMemory: Record<string, unknown> | null = null;
+        try {
+          const vectorMod = await import(vectorModPath + cacheBuster);
+          if (vectorMod.initVectorDb) {
+            await vectorMod.initVectorDb();
+            vectorMemory = {
+              archiveTurn: vectorMod.archiveTurn,
+              archiveTurns: vectorMod.archiveTurns,
+              searchMemory: vectorMod.searchMemory,
+            };
+          }
+        } catch {
+          // Vector memory is optional
+        }
+
+        if (factory) {
+          const preprocessor = factory({
+            enabled: true,
+            memoryOnlyMode: true,
+            usableContext: 120000,
+            pressureTiers: {
+              noAction: 0.7,
+              embed: 0.8,
+              lightDecay: 0.9,
+              aggressive: 1.0,
+            },
+            useDynamicPreservation: true,
+            targetTokens: 55000,
+            systemOverhead: 60000,
+            vectorMemory,
+          });
+          const originalStreamFn = activeSession.agent.streamFn;
+          activeSession.agent.streamFn = async function (
+            model: unknown,
+            context: { messages: unknown[]; [k: string]: unknown },
+            options: unknown,
+          ) {
+            const processedMessages = await preprocessor(
+              context.messages,
+              runAbortController.signal,
+            );
+            const processedContext = { ...context, messages: processedMessages };
+            return (originalStreamFn as Function).call(this, model, processedContext, options);
+          } as typeof activeSession.agent.streamFn;
+        }
+      } catch {
+        // Degradation extension not present — normal for installs without it
+      }
+
       try {
         const prior = await sanitizeSessionHistory({
           messages: activeSession.messages,
