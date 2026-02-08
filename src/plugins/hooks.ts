@@ -11,6 +11,8 @@ import type {
   PluginHookAfterToolCallEvent,
   PluginHookAgentContext,
   PluginHookAgentEndEvent,
+  PluginHookAssistantMessageEndContext,
+  PluginHookAssistantMessageEndEvent,
   PluginHookBeforeAgentStartEvent,
   PluginHookBeforeAgentStartResult,
   PluginHookBeforeCompactionEvent,
@@ -26,6 +28,9 @@ import type {
   PluginHookMessageSentEvent,
   PluginHookName,
   PluginHookRegistration,
+  PluginHookResolveModelContext,
+  PluginHookResolveModelEvent,
+  PluginHookResolveModelResult,
   PluginHookSessionContext,
   PluginHookSessionEndEvent,
   PluginHookSessionStartEvent,
@@ -41,6 +46,9 @@ export type {
   PluginHookBeforeAgentStartEvent,
   PluginHookBeforeAgentStartResult,
   PluginHookAgentEndEvent,
+  PluginHookResolveModelContext,
+  PluginHookResolveModelEvent,
+  PluginHookResolveModelResult,
   PluginHookBeforeCompactionEvent,
   PluginHookAfterCompactionEvent,
   PluginHookMessageContext,
@@ -48,6 +56,8 @@ export type {
   PluginHookMessageSendingEvent,
   PluginHookMessageSendingResult,
   PluginHookMessageSentEvent,
+  PluginHookAssistantMessageEndContext,
+  PluginHookAssistantMessageEndEvent,
   PluginHookToolContext,
   PluginHookBeforeToolCallEvent,
   PluginHookBeforeToolCallResult,
@@ -230,6 +240,26 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     return runVoidHook("after_compaction", event, ctx);
   }
 
+  /**
+   * Run resolve_model hook.
+   * Allows plugins to override model selection before the agent runs.
+   * Runs sequentially, merging provider/model from all handlers.
+   */
+  async function runResolveModel(
+    event: PluginHookResolveModelEvent,
+    ctx: PluginHookResolveModelContext,
+  ): Promise<PluginHookResolveModelResult | undefined> {
+    return runModifyingHook<"resolve_model", PluginHookResolveModelResult>(
+      "resolve_model",
+      event,
+      ctx,
+      (acc, next) => ({
+        provider: next.provider ?? acc?.provider,
+        model: next.model ?? acc?.model,
+      }),
+    );
+  }
+
   // =========================================================================
   // Message Hooks
   // =========================================================================
@@ -274,6 +304,18 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     ctx: PluginHookMessageContext,
   ): Promise<void> {
     return runVoidHook("message_sent", event, ctx);
+  }
+
+  /**
+   * Run assistant_message_end hook.
+   * Fires when an assistant message completes.
+   * Runs in parallel (fire-and-forget).
+   */
+  async function runAssistantMessageEnd(
+    event: PluginHookAssistantMessageEndEvent,
+    ctx: PluginHookAssistantMessageEndContext,
+  ): Promise<void> {
+    return runVoidHook("assistant_message_end", event, ctx);
   }
 
   // =========================================================================
@@ -445,12 +487,14 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     // Agent hooks
     runBeforeAgentStart,
     runAgentEnd,
+    runResolveModel,
     runBeforeCompaction,
     runAfterCompaction,
     // Message hooks
     runMessageReceived,
     runMessageSending,
     runMessageSent,
+    runAssistantMessageEnd,
     // Tool hooks
     runBeforeToolCall,
     runAfterToolCall,

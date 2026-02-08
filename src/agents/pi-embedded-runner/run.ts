@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
 import type { EmbeddedPiAgentMeta, EmbeddedPiRunResult } from "./types.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
@@ -109,12 +110,33 @@ export async function runEmbeddedPiAgent(
       }
       const prevCwd = process.cwd();
 
-      const provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
-      const modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+      let provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
+      let modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
       const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
       const fallbackConfigured =
         (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
       await ensureOpenClawModelsJson(params.config, agentDir);
+
+      // Run resolve_model hook to allow plugins to override model selection
+      const hookRunnerForResolve = getGlobalHookRunner();
+      if (hookRunnerForResolve?.hasHooks("resolve_model")) {
+        try {
+          const resolveResult = await hookRunnerForResolve.runResolveModel(
+            { provider, model: modelId, content: params.prompt },
+            {
+              agentId: params.agentId,
+              sessionKey: params.sessionKey,
+              workspaceDir: params.workspaceDir,
+              messageProvider: params.messageProvider,
+              channelId: channelHint,
+            },
+          );
+          if (resolveResult?.provider) provider = resolveResult.provider;
+          if (resolveResult?.model) modelId = resolveResult.model;
+        } catch (err) {
+          log.warn(`resolve_model hook failed: ${String(err)}`);
+        }
+      }
 
       const { model, error, authStorage, modelRegistry } = resolveModel(
         provider,

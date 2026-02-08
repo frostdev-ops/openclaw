@@ -287,11 +287,13 @@ export type PluginDiagnostic = {
 export type PluginHookName =
   | "before_agent_start"
   | "agent_end"
+  | "resolve_model"
   | "before_compaction"
   | "after_compaction"
   | "message_received"
   | "message_sending"
   | "message_sent"
+  | "assistant_message_end"
   | "before_tool_call"
   | "after_tool_call"
   | "tool_result_persist"
@@ -325,6 +327,26 @@ export type PluginHookAgentEndEvent = {
   success: boolean;
   error?: string;
   durationMs?: number;
+};
+
+// resolve_model hook
+export type PluginHookResolveModelContext = {
+  agentId?: string;
+  sessionKey?: string;
+  workspaceDir?: string;
+  messageProvider?: string;
+  channelId?: string;
+};
+
+export type PluginHookResolveModelEvent = {
+  provider: string;
+  model: string;
+  content?: string;
+};
+
+export type PluginHookResolveModelResult = {
+  provider?: string;
+  model?: string;
 };
 
 // Compaction hooks
@@ -372,6 +394,19 @@ export type PluginHookMessageSentEvent = {
   content: string;
   success: boolean;
   error?: string;
+};
+
+// assistant_message_end hook
+export type PluginHookAssistantMessageEndContext = {
+  agentId?: string;
+  sessionKey?: string;
+  channelId?: string;
+  messageProvider?: string;
+};
+
+export type PluginHookAssistantMessageEndEvent = {
+  content: string;
+  rawText?: string;
 };
 
 // Tool context
@@ -467,6 +502,10 @@ export type PluginHookHandlerMap = {
     ctx: PluginHookAgentContext,
   ) => Promise<PluginHookBeforeAgentStartResult | void> | PluginHookBeforeAgentStartResult | void;
   agent_end: (event: PluginHookAgentEndEvent, ctx: PluginHookAgentContext) => Promise<void> | void;
+  resolve_model: (
+    event: PluginHookResolveModelEvent,
+    ctx: PluginHookResolveModelContext,
+  ) => Promise<PluginHookResolveModelResult | void> | PluginHookResolveModelResult | void;
   before_compaction: (
     event: PluginHookBeforeCompactionEvent,
     ctx: PluginHookAgentContext,
@@ -486,6 +525,10 @@ export type PluginHookHandlerMap = {
   message_sent: (
     event: PluginHookMessageSentEvent,
     ctx: PluginHookMessageContext,
+  ) => Promise<void> | void;
+  assistant_message_end: (
+    event: PluginHookAssistantMessageEndEvent,
+    ctx: PluginHookAssistantMessageEndContext,
   ) => Promise<void> | void;
   before_tool_call: (
     event: PluginHookBeforeToolCallEvent,

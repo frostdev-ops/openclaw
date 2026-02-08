@@ -259,6 +259,8 @@ export function handleMessageEnd(
   const chunkerHasBuffered = ctx.blockChunker?.hasBuffered() ?? false;
   ctx.finalizeAssistantTexts({ text, addedDuringMessage, chunkerHasBuffered });
 
+  void ctx.params.onAssistantMessageEnd?.({ content: cleanedText || rawText, rawText });
+
   const onBlockReply = ctx.params.onBlockReply;
   const shouldEmitReasoning = Boolean(
     ctx.state.includeReasoning &&

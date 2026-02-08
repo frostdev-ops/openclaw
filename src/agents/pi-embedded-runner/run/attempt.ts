@@ -621,6 +621,16 @@ export async function runEmbeddedAttempt(
         });
       };
 
+      // Get hook runner once for before_agent_start, agent_end, and assistant_message_end hooks
+      const hookRunner = getGlobalHookRunner();
+      const hookAgentId =
+        typeof params.agentId === "string" && params.agentId.trim()
+          ? normalizeAgentId(params.agentId)
+          : resolveSessionAgentIds({
+              sessionKey: params.sessionKey,
+              config: params.config,
+            }).sessionAgentId;
+
       const subscription = subscribeEmbeddedPiSession({
         session: activeSession,
         runId: params.runId,
@@ -637,6 +647,23 @@ export async function runEmbeddedAttempt(
         blockReplyChunking: params.blockReplyChunking,
         onPartialReply: params.onPartialReply,
         onAssistantMessageStart: params.onAssistantMessageStart,
+        onAssistantMessageEnd: (payload) => {
+          if (hookRunner?.hasHooks("assistant_message_end")) {
+            hookRunner
+              .runAssistantMessageEnd(
+                { content: payload.content, rawText: payload.rawText },
+                {
+                  agentId: hookAgentId,
+                  sessionKey: params.sessionKey,
+                  channelId: params.messageChannel ?? params.messageProvider,
+                  messageProvider: params.messageProvider,
+                },
+              )
+              .catch((err) => {
+                log.warn(`assistant_message_end hook failed: ${err}`);
+              });
+          }
+        },
         onAgentEvent: params.onAgentEvent,
         enforceFinalTag: params.enforceFinalTag,
       });
@@ -704,16 +731,6 @@ export async function runEmbeddedAttempt(
           });
         }
       }
-
-      // Get hook runner once for both before_agent_start and agent_end hooks
-      const hookRunner = getGlobalHookRunner();
-      const hookAgentId =
-        typeof params.agentId === "string" && params.agentId.trim()
-          ? normalizeAgentId(params.agentId)
-          : resolveSessionAgentIds({
-              sessionKey: params.sessionKey,
-              config: params.config,
-            }).sessionAgentId;
 
       let promptError: unknown = null;
       try {
