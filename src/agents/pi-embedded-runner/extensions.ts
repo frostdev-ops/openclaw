@@ -67,8 +67,17 @@ function buildContextPruningExtension(params: {
   };
 }
 
+type LegacyCompactionConfig = {
+  mode?: string;
+  maxHistoryShare?: number;
+  tieredPath?: string;
+  tieredCompaction?: Record<string, unknown>;
+  smartPath?: string;
+  smartCompaction?: Record<string, unknown>;
+};
+
 function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" | "tiered" | "smart" {
-  const mode = (cfg?.agents?.defaults?.compaction as { mode?: string } | undefined)?.mode;
+  const mode = (cfg?.agents?.defaults?.compaction as LegacyCompactionConfig | undefined)?.mode;
   if (mode === "safeguard") {
     return "safeguard";
   }
@@ -90,7 +99,9 @@ export function buildEmbeddedExtensionPaths(params: {
 }): string[] {
   const paths: string[] = [];
   const compactionMode = resolveCompactionMode(params.cfg);
-  const compactionCfg = params.cfg?.agents?.defaults?.compaction as any;
+  const compactionCfg = params.cfg?.agents?.defaults?.compaction as
+    | LegacyCompactionConfig
+    | undefined;
   const contextWindowInfo = resolveContextWindowInfo({
     cfg: params.cfg,
     provider: params.provider,
