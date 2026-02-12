@@ -68,10 +68,16 @@ function buildContextPruningExtension(params: {
 }
 
 function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" | "tiered" | "smart" {
-  const mode = cfg?.agents?.defaults?.compaction?.mode;
-  if (mode === "safeguard") return "safeguard";
-  if (mode === "tiered") return "tiered";
-  if (mode === "smart") return "smart";
+  const mode = (cfg?.agents?.defaults?.compaction as { mode?: string } | undefined)?.mode;
+  if (mode === "safeguard") {
+    return "safeguard";
+  }
+  if (mode === "tiered") {
+    return "tiered";
+  }
+  if (mode === "smart") {
+    return "smart";
+  }
   return "default";
 }
 
@@ -84,7 +90,7 @@ export function buildEmbeddedExtensionPaths(params: {
 }): string[] {
   const paths: string[] = [];
   const compactionMode = resolveCompactionMode(params.cfg);
-  const compactionCfg = params.cfg?.agents?.defaults?.compaction;
+  const compactionCfg = params.cfg?.agents?.defaults?.compaction as any;
   const contextWindowInfo = resolveContextWindowInfo({
     cfg: params.cfg,
     provider: params.provider,

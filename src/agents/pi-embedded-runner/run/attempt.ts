@@ -586,18 +586,24 @@ export async function runEmbeddedAttempt(
             vectorMemory,
           });
           const originalStreamFn = activeSession.agent.streamFn;
-          activeSession.agent.streamFn = async function (
+          const streamThis = activeSession.agent;
+          activeSession.agent.streamFn = (async (
             model: unknown,
             context: { messages: unknown[]; [k: string]: unknown },
             options: unknown,
-          ) {
+          ) => {
             const processedMessages = await preprocessor(
               context.messages,
               runAbortController.signal,
             );
             const processedContext = { ...context, messages: processedMessages };
-            return (originalStreamFn as Function).call(this, model, processedContext, options);
-          } as typeof activeSession.agent.streamFn;
+            return (originalStreamFn as Function).call(
+              streamThis,
+              model,
+              processedContext,
+              options,
+            );
+          }) as typeof activeSession.agent.streamFn;
         }
       } catch {
         // Degradation extension not present — normal for installs without it
