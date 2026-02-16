@@ -1,3 +1,5 @@
+import { createSessionManagerRuntimeRegistry } from "./session-manager-runtime-registry.js";
+
 export type CompactionSafeguardRuntimeValue = {
   maxHistoryShare?: number;
   contextWindowTokens?: number;
@@ -5,33 +7,8 @@ export type CompactionSafeguardRuntimeValue = {
   smartCompaction?: Record<string, unknown>;
 };
 
-// Session-scoped runtime registry keyed by object identity.
-// Follows the same WeakMap pattern as context-pruning/runtime.ts.
-const REGISTRY = new WeakMap<object, CompactionSafeguardRuntimeValue>();
+const registry = createSessionManagerRuntimeRegistry<CompactionSafeguardRuntimeValue>();
 
-export function setCompactionSafeguardRuntime(
-  sessionManager: unknown,
-  value: CompactionSafeguardRuntimeValue | null,
-): void {
-  if (!sessionManager || typeof sessionManager !== "object") {
-    return;
-  }
+export const setCompactionSafeguardRuntime = registry.set;
 
-  const key = sessionManager;
-  if (value === null) {
-    REGISTRY.delete(key);
-    return;
-  }
-
-  REGISTRY.set(key, value);
-}
-
-export function getCompactionSafeguardRuntime(
-  sessionManager: unknown,
-): CompactionSafeguardRuntimeValue | null {
-  if (!sessionManager || typeof sessionManager !== "object") {
-    return null;
-  }
-
-  return REGISTRY.get(sessionManager) ?? null;
-}
+export const getCompactionSafeguardRuntime = registry.get;
