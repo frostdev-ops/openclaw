@@ -1,24 +1,16 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
-import type { SessionManager } from "@mariozechner/pi-coding-agent";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import type { ExtensionFactory, SessionManager } from "@mariozechner/pi-coding-agent";
 import type { OpenClawConfig } from "../../config/config.js";
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { setCompactionSafeguardRuntime } from "../pi-extensions/compaction-safeguard-runtime.js";
+import compactionSafeguardExtension from "../pi-extensions/compaction-safeguard.js";
+import contextPruningExtension from "../pi-extensions/context-pruning.js";
 import { setContextPruningRuntime } from "../pi-extensions/context-pruning/runtime.js";
 import { computeEffectiveSettings } from "../pi-extensions/context-pruning/settings.js";
 import { makeToolPrunablePredicate } from "../pi-extensions/context-pruning/tools.js";
 import { ensurePiCompactionReserveTokens } from "../pi-settings.js";
 import { isCacheTtlEligibleProvider, readLastCacheTtlTimestamp } from "./cache-ttl.js";
-
-function resolvePiExtensionPath(id: string): string {
-  const self = fileURLToPath(import.meta.url);
-  const dir = path.dirname(self);
-  // In dev this file is `.ts` (tsx), in production it's `.js`.
-  const ext = path.extname(self) === ".ts" ? "ts" : "js";
-  return path.join(dir, "..", "pi-extensions", `${id}.${ext}`);
-}
 
 function resolveContextWindowTokens(params: {
   cfg: OpenClawConfig | undefined;
@@ -35,24 +27,24 @@ function resolveContextWindowTokens(params: {
   }).tokens;
 }
 
-function buildContextPruningExtension(params: {
+function buildContextPruningFactory(params: {
   cfg: OpenClawConfig | undefined;
   sessionManager: SessionManager;
   provider: string;
   modelId: string;
   model: Model<Api> | undefined;
-}): { additionalExtensionPaths?: string[] } {
+}): ExtensionFactory | undefined {
   const raw = params.cfg?.agents?.defaults?.contextPruning;
   if (raw?.mode !== "cache-ttl") {
-    return {};
+    return undefined;
   }
   if (!isCacheTtlEligibleProvider(params.provider, params.modelId)) {
-    return {};
+    return undefined;
   }
 
   const settings = computeEffectiveSettings(raw);
   if (!settings) {
-    return {};
+    return undefined;
   }
 
   setContextPruningRuntime(params.sessionManager, {
@@ -62,9 +54,7 @@ function buildContextPruningExtension(params: {
     lastCacheTouchAt: readLastCacheTtlTimestamp(params.sessionManager),
   });
 
-  return {
-    additionalExtensionPaths: [resolvePiExtensionPath("context-pruning")],
-  };
+  return contextPruningExtension;
 }
 
 type LegacyCompactionConfig = {
@@ -90,14 +80,14 @@ function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" | 
   return "default";
 }
 
-export function buildEmbeddedExtensionPaths(params: {
+export function buildEmbeddedExtensionFactories(params: {
   cfg: OpenClawConfig | undefined;
   sessionManager: SessionManager;
   provider: string;
   modelId: string;
   model: Model<Api> | undefined;
-}): string[] {
-  const paths: string[] = [];
+}): ExtensionFactory[] {
+  const factories: ExtensionFactory[] = [];
   const compactionMode = resolveCompactionMode(params.cfg);
   const compactionCfg = params.cfg?.agents?.defaults?.compaction as
     | LegacyCompactionConfig
@@ -114,48 +104,34 @@ export function buildEmbeddedExtensionPaths(params: {
     setCompactionSafeguardRuntime(params.sessionManager, {
       maxHistoryShare: compactionCfg?.maxHistoryShare,
       contextWindowTokens: contextWindowInfo.tokens,
+      model: params.model,
     });
-    paths.push(resolvePiExtensionPath("compaction-safeguard"));
+    factories.push(compactionSafeguardExtension);
   } else if (compactionMode === "tiered") {
-    const tieredPath = compactionCfg?.tieredPath;
-    if (tieredPath) {
-      const resolvedPath = path.isAbsolute(tieredPath)
-        ? tieredPath
-        : path.join(params.cfg?.agents?.defaults?.workspace || process.cwd(), tieredPath);
-      paths.push(resolvedPath);
-    } else {
-      const workspace = params.cfg?.agents?.defaults?.workspace || process.cwd();
-      paths.push(path.join(workspace, "extensions", "tiered-compaction.js"));
-    }
+    // Tiered compaction uses an external extension loaded via additionalExtensionPaths.
+    // We still set up the runtime so the extension can access config at runtime.
     setCompactionSafeguardRuntime(params.sessionManager, {
       maxHistoryShare: compactionCfg?.maxHistoryShare,
       contextWindowTokens: contextWindowInfo.tokens,
       tieredCompaction: compactionCfg?.tieredCompaction as Record<string, unknown>,
+      model: params.model,
     });
   } else if (compactionMode === "smart") {
-    const smartPath = compactionCfg?.smartPath;
-    if (smartPath) {
-      const resolvedPath = path.isAbsolute(smartPath)
-        ? smartPath
-        : path.join(params.cfg?.agents?.defaults?.workspace || process.cwd(), smartPath);
-      paths.push(resolvedPath);
-    } else {
-      const workspace = params.cfg?.agents?.defaults?.workspace || process.cwd();
-      paths.push(path.join(workspace, "extensions", "smart-compaction.js"));
-    }
+    // Smart compaction uses an external extension loaded via additionalExtensionPaths.
     setCompactionSafeguardRuntime(params.sessionManager, {
       maxHistoryShare: compactionCfg?.maxHistoryShare,
       contextWindowTokens: contextWindowInfo.tokens,
       smartCompaction: compactionCfg?.smartCompaction as Record<string, unknown>,
       tieredCompaction: compactionCfg?.tieredCompaction as Record<string, unknown>,
+      model: params.model,
     });
   }
 
-  const pruning = buildContextPruningExtension(params);
-  if (pruning.additionalExtensionPaths) {
-    paths.push(...pruning.additionalExtensionPaths);
+  const pruningFactory = buildContextPruningFactory(params);
+  if (pruningFactory) {
+    factories.push(pruningFactory);
   }
-  return paths;
+  return factories;
 }
 
 export { ensurePiCompactionReserveTokens };

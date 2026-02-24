@@ -1,5 +1,6 @@
 import type { Bot } from "grammy";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RuntimeEnv } from "../../runtime.js";
 import { deliverReplies } from "./delivery.js";
 
 const loadWebMedia = vi.fn();
@@ -10,7 +11,12 @@ const baseDeliveryParams = {
   textLimit: 4000,
 } as const;
 type DeliverRepliesParams = Parameters<typeof deliverReplies>[0];
-type RuntimeStub = { error: ReturnType<typeof vi.fn>; log?: ReturnType<typeof vi.fn> };
+type DeliverWithParams = Omit<
+  DeliverRepliesParams,
+  "chatId" | "token" | "replyToMode" | "textLimit"
+> &
+  Partial<Pick<DeliverRepliesParams, "replyToMode" | "textLimit">>;
+type RuntimeStub = Pick<RuntimeEnv, "error" | "log" | "exit">;
 
 vi.mock("../../web/media.js", () => ({
   loadWebMedia: (...args: unknown[]) => loadWebMedia(...args),
@@ -29,14 +35,18 @@ vi.mock("grammy", () => ({
 }));
 
 function createRuntime(withLog = true): RuntimeStub {
-  return withLog ? { error: vi.fn(), log: vi.fn() } : { error: vi.fn() };
+  return {
+    error: vi.fn(),
+    log: withLog ? vi.fn() : vi.fn(),
+    exit: vi.fn(),
+  };
 }
 
 function createBot(api: Record<string, unknown> = {}): Bot {
   return { api } as unknown as Bot;
 }
 
-async function deliverWith(params: Omit<DeliverRepliesParams, "chatId" | "token">) {
+async function deliverWith(params: DeliverWithParams) {
   await deliverReplies({
     ...baseDeliveryParams,
     ...params,
@@ -51,9 +61,38 @@ function mockMediaLoad(fileName: string, contentType: string, data: string) {
   });
 }
 
+function createSendMessageHarness(messageId = 4) {
+  const runtime = createRuntime();
+  const sendMessage = vi.fn().mockResolvedValue({
+    message_id: messageId,
+    chat: { id: "123" },
+  });
+  const bot = createBot({ sendMessage });
+  return { runtime, sendMessage, bot };
+}
+
+function createVoiceMessagesForbiddenError() {
+  return new Error(
+    "GrammyError: Call to 'sendVoice' failed! (400: Bad Request: VOICE_MESSAGES_FORBIDDEN)",
+  );
+}
+
+function createVoiceFailureHarness(params: {
+  voiceError: Error;
+  sendMessageResult?: { message_id: number; chat: { id: string } };
+}) {
+  const runtime = createRuntime();
+  const sendVoice = vi.fn().mockRejectedValue(params.voiceError);
+  const sendMessage = params.sendMessageResult
+    ? vi.fn().mockResolvedValue(params.sendMessageResult)
+    : vi.fn();
+  const bot = createBot({ sendVoice, sendMessage });
+  return { runtime, sendVoice, sendMessage, bot };
+}
+
 describe("deliverReplies", () => {
   beforeEach(() => {
-    loadWebMedia.mockReset();
+    loadWebMedia.mockClear();
   });
 
   it("skips audioAsVoice-only payloads without logging an error", async () => {
@@ -167,37 +206,27 @@ describe("deliverReplies", () => {
     );
   });
 
-  it("does not include message_thread_id for DMs (threads don't exist in private chats)", async () => {
-    const runtime = createRuntime();
-    const sendMessage = vi.fn().mockResolvedValue({
-      message_id: 4,
-      chat: { id: "123" },
-    });
-    const bot = createBot({ sendMessage });
+  it("includes message_thread_id for DM topics", async () => {
+    const { runtime, sendMessage, bot } = createSendMessageHarness();
 
     await deliverWith({
       replies: [{ text: "Hello" }],
       runtime,
       bot,
-      thread: { id: 1, scope: "dm" },
+      thread: { id: 42, scope: "dm" },
     });
 
     expect(sendMessage).toHaveBeenCalledWith(
       "123",
       expect.any(String),
-      expect.not.objectContaining({
-        message_thread_id: 1,
+      expect.objectContaining({
+        message_thread_id: 42,
       }),
     );
   });
 
   it("does not include link_preview_options when linkPreview is true", async () => {
-    const runtime = createRuntime();
-    const sendMessage = vi.fn().mockResolvedValue({
-      message_id: 4,
-      chat: { id: "123" },
-    });
-    const bot = createBot({ sendMessage });
+    const { runtime, sendMessage, bot } = createSendMessageHarness();
 
     await deliverWith({
       replies: [{ text: "Check https://example.com" }],
@@ -248,19 +277,13 @@ describe("deliverReplies", () => {
   });
 
   it("falls back to text when sendVoice fails with VOICE_MESSAGES_FORBIDDEN", async () => {
-    const runtime = createRuntime();
-    const sendVoice = vi
-      .fn()
-      .mockRejectedValue(
-        new Error(
-          "GrammyError: Call to 'sendVoice' failed! (400: Bad Request: VOICE_MESSAGES_FORBIDDEN)",
-        ),
-      );
-    const sendMessage = vi.fn().mockResolvedValue({
-      message_id: 5,
-      chat: { id: "123" },
+    const { runtime, sendVoice, sendMessage, bot } = createVoiceFailureHarness({
+      voiceError: createVoiceMessagesForbiddenError(),
+      sendMessageResult: {
+        message_id: 5,
+        chat: { id: "123" },
+      },
     });
-    const bot = createBot({ sendVoice, sendMessage });
 
     mockMediaLoad("note.ogg", "audio/ogg", "voice");
 
@@ -305,16 +328,9 @@ describe("deliverReplies", () => {
   });
 
   it("rethrows VOICE_MESSAGES_FORBIDDEN when no text fallback is available", async () => {
-    const runtime = createRuntime();
-    const sendVoice = vi
-      .fn()
-      .mockRejectedValue(
-        new Error(
-          "GrammyError: Call to 'sendVoice' failed! (400: Bad Request: VOICE_MESSAGES_FORBIDDEN)",
-        ),
-      );
-    const sendMessage = vi.fn();
-    const bot = createBot({ sendVoice, sendMessage });
+    const { runtime, sendVoice, sendMessage, bot } = createVoiceFailureHarness({
+      voiceError: createVoiceMessagesForbiddenError(),
+    });
 
     mockMediaLoad("note.ogg", "audio/ogg", "voice");
 

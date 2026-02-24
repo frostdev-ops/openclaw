@@ -1,4 +1,3 @@
-import type { APIStringSelectComponent } from "discord-api-types/v10";
 import {
   Button,
   ChannelSelectMenu,
@@ -16,9 +15,8 @@ import {
   type StringSelectMenuInteraction,
   type UserSelectMenuInteraction,
 } from "@buape/carbon";
+import type { APIStringSelectComponent } from "discord-api-types/v10";
 import { ButtonStyle, ChannelType } from "discord-api-types/v10";
-import type { OpenClawConfig } from "../../config/config.js";
-import type { DiscordAccountConfig } from "../../config/types.discord.js";
 import { resolveHumanDelayConfig } from "../../agents/identity.js";
 import { resolveChunkMode, resolveTextChunkLimit } from "../../auto-reply/chunk.js";
 import { formatInboundEnvelope, resolveEnvelopeFormatOptions } from "../../auto-reply/envelope.js";
@@ -27,8 +25,11 @@ import { dispatchReplyWithBufferedBlockDispatcher } from "../../auto-reply/reply
 import { createReplyReferencePlanner } from "../../auto-reply/reply/reply-reference.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
+import type { OpenClawConfig } from "../../config/config.js";
+import { isDangerousNameMatchingEnabled } from "../../config/dangerous-name-matching.js";
 import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
 import { readSessionUpdatedAt, resolveStorePath } from "../../config/sessions.js";
+import type { DiscordAccountConfig } from "../../config/types.discord.js";
 import { logVerbose } from "../../globals.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { logDebug, logError } from "../../logger.js";
@@ -237,6 +238,7 @@ async function ensureGuildComponentMemberAllowed(params: {
   replyOpts: { ephemeral?: boolean };
   componentLabel: string;
   unauthorizedReply: string;
+  allowNameMatching: boolean;
 }): Promise<boolean> {
   const {
     interaction,
@@ -275,6 +277,7 @@ async function ensureGuildComponentMemberAllowed(params: {
       name: user.username,
       tag: user.discriminator ? `${user.username}#${user.discriminator}` : undefined,
     },
+    allowNameMatching: params.allowNameMatching,
   });
   if (memberAllowed) {
     return true;
@@ -285,6 +288,50 @@ async function ensureGuildComponentMemberAllowed(params: {
     await interaction.reply({
       content: unauthorizedReply,
       ...replyOpts,
+    });
+  } catch {
+    // Interaction may have expired
+  }
+  return false;
+}
+
+async function ensureComponentUserAllowed(params: {
+  entry: DiscordComponentEntry;
+  interaction: AgentComponentInteraction;
+  user: DiscordUser;
+  replyOpts: { ephemeral?: boolean };
+  componentLabel: string;
+  unauthorizedReply: string;
+  allowNameMatching: boolean;
+}): Promise<boolean> {
+  const allowList = normalizeDiscordAllowList(params.entry.allowedUsers, [
+    "discord:",
+    "user:",
+    "pk:",
+  ]);
+  if (!allowList) {
+    return true;
+  }
+  const match = resolveDiscordAllowListMatch({
+    allowList,
+    candidate: {
+      id: params.user.id,
+      name: params.user.username,
+      tag: formatDiscordUserTag(params.user),
+    },
+    allowNameMatching: params.allowNameMatching,
+  });
+  if (match.allowed) {
+    return true;
+  }
+
+  logVerbose(
+    `discord component ${params.componentLabel}: blocked user ${params.user.id} (not in allowedUsers)`,
+  );
+  try {
+    await params.interaction.reply({
+      content: params.unauthorizedReply,
+      ...params.replyOpts,
     });
   } catch {
     // Interaction may have expired
@@ -319,6 +366,7 @@ async function ensureAgentComponentInteractionAllowed(params: {
     replyOpts: params.replyOpts,
     componentLabel: params.componentLabel,
     unauthorizedReply: params.unauthorizedReply,
+    allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
   });
   if (!memberAllowed) {
     return null;
@@ -422,7 +470,8 @@ async function ensureDmComponentAuthorized(params: {
     return true;
   }
 
-  const storeAllowFrom = await readChannelAllowFromStore("discord").catch(() => []);
+  const storeAllowFrom =
+    dmPolicy === "allowlist" ? [] : await readChannelAllowFromStore("discord").catch(() => []);
   const effectiveAllowFrom = [...(ctx.allowFrom ?? []), ...storeAllowFrom];
   const allowList = normalizeDiscordAllowList(effectiveAllowFrom, ["discord:", "user:", "pk:"]);
   const allowMatch = allowList
@@ -433,6 +482,7 @@ async function ensureDmComponentAuthorized(params: {
           name: user.username,
           tag: formatDiscordUserTag(user),
         },
+        allowNameMatching: isDangerousNameMatchingEnabled(ctx.discordConfig),
       })
     : { allowed: false };
   if (allowMatch.allowed) {
@@ -735,6 +785,7 @@ async function dispatchDiscordComponentEvent(params: {
     channelConfig,
     guildInfo,
     sender: { id: interactionCtx.user.id, name: interactionCtx.user.username, tag: senderTag },
+    allowNameMatching: isDangerousNameMatchingEnabled(ctx.discordConfig),
   });
   const storePath = resolveStorePath(ctx.cfg.session?.store, { agentId });
   const envelopeOptions = resolveEnvelopeFormatOptions(ctx.cfg);
@@ -845,6 +896,7 @@ async function dispatchDiscordComponentEvent(params: {
           rest: interaction.client.rest,
           runtime,
           replyToId,
+          replyToMode,
           textLimit,
           maxLinesPerMessage: ctx.discordConfig?.maxLinesPerMessage,
           tableMode,
@@ -919,6 +971,7 @@ async function handleDiscordComponentEvent(params: {
     guildEntries: params.ctx.guildEntries,
   });
   const channelCtx = resolveDiscordChannelContext(params.interaction);
+  const unauthorizedReply = `You are not authorized to use this ${params.componentLabel}.`;
   const memberAllowed = await ensureGuildComponentMemberAllowed({
     interaction: params.interaction,
     guildInfo,
@@ -929,9 +982,23 @@ async function handleDiscordComponentEvent(params: {
     user,
     replyOpts,
     componentLabel: params.componentLabel,
-    unauthorizedReply: `You are not authorized to use this ${params.componentLabel}.`,
+    unauthorizedReply,
+    allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
   });
   if (!memberAllowed) {
+    return;
+  }
+
+  const componentAllowed = await ensureComponentUserAllowed({
+    entry,
+    interaction: params.interaction,
+    user,
+    replyOpts,
+    componentLabel: params.componentLabel,
+    unauthorizedReply,
+    allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
+  });
+  if (!componentAllowed) {
     return;
   }
 
@@ -1056,6 +1123,7 @@ async function handleDiscordModalTrigger(params: {
     guildEntries: params.ctx.guildEntries,
   });
   const channelCtx = resolveDiscordChannelContext(params.interaction);
+  const unauthorizedReply = "You are not authorized to use this form.";
   const memberAllowed = await ensureGuildComponentMemberAllowed({
     interaction: params.interaction,
     guildInfo,
@@ -1066,9 +1134,23 @@ async function handleDiscordModalTrigger(params: {
     user,
     replyOpts,
     componentLabel: "form",
-    unauthorizedReply: "You are not authorized to use this form.",
+    unauthorizedReply,
+    allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
   });
   if (!memberAllowed) {
+    return;
+  }
+
+  const componentAllowed = await ensureComponentUserAllowed({
+    entry,
+    interaction: params.interaction,
+    user,
+    replyOpts,
+    componentLabel: "form",
+    unauthorizedReply,
+    allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
+  });
+  if (!componentAllowed) {
     return;
   }
 
@@ -1502,6 +1584,7 @@ class DiscordComponentModal extends Modal {
       replyOpts,
       componentLabel: "form",
       unauthorizedReply: "You are not authorized to use this form.",
+      allowNameMatching: isDangerousNameMatchingEnabled(this.ctx.discordConfig),
     });
     if (!memberAllowed) {
       return;
