@@ -52,6 +52,7 @@ import {
 import { readPostCompactionContext } from "./post-compaction-context.js";
 import { enqueueFollowupRun, type FollowupRun, type QueueSettings } from "./queue.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
+import { isRoutableChannel } from "./route-reply.js";
 import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
 import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
@@ -227,11 +228,20 @@ export async function runReplyAgent(params: {
   };
 
   if (shouldSteer && isStreaming) {
-    const steered = queueEmbeddedPiMessage(followupRun.run.sessionId, followupRun.prompt);
-    if (steered && !shouldFollowup) {
-      await touchActiveSessionEntry();
-      typing.cleanup();
-      return undefined;
+    // Cross-channel guard: if this message originated from a routable external channel
+    // (e.g. Discord DM arriving while webchat is streaming), do NOT inject it into the
+    // current stream. The stream belongs to a different surface and the originating
+    // channel would be lost. Fall through to enqueueFollowupRun instead so the message
+    // is processed after the current turn completes and routed back to its source channel.
+    const isCrossChannelMessage =
+      isRoutableChannel(followupRun.originatingChannel) && Boolean(followupRun.originatingTo);
+    if (!isCrossChannelMessage) {
+      const steered = queueEmbeddedPiMessage(followupRun.run.sessionId, followupRun.prompt);
+      if (steered && !shouldFollowup) {
+        await touchActiveSessionEntry();
+        typing.cleanup();
+        return undefined;
+      }
     }
   }
 
