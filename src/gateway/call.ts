@@ -7,6 +7,7 @@ import {
   resolveStateDir,
 } from "../config/config.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
+import { pickPrimaryTailnetIPv4 } from "../infra/tailnet.js";
 import { loadGatewayTlsRuntime } from "../infra/tls/gateway.js";
 import {
   GATEWAY_CLIENT_MODES,
@@ -118,8 +119,17 @@ export function buildGatewayConnectionDetails(
   const localPort = resolveGatewayPort(config);
   const bindMode = config.gateway?.bind ?? "loopback";
   const scheme = tlsEnabled ? "wss" : "ws";
-  // Self-connections should always target loopback; bind mode only controls listener exposure.
-  const localUrl = `${scheme}://127.0.0.1:${localPort}`;
+  // Resolve the local host based on bind mode so we connect to where the gateway actually listens.
+  let localHost = "127.0.0.1";
+  if (bindMode === "tailnet") {
+    localHost = pickPrimaryTailnetIPv4() ?? "127.0.0.1";
+  } else if (bindMode === "custom") {
+    const customHost = config.gateway?.customBindHost?.trim();
+    if (customHost) {
+      localHost = customHost;
+    }
+  }
+  const localUrl = `${scheme}://${localHost}:${localPort}`;
   const urlOverride =
     typeof options.url === "string" && options.url.trim().length > 0
       ? options.url.trim()
@@ -134,7 +144,7 @@ export function buildGatewayConnectionDetails(
       ? "config gateway.remote.url"
       : remoteMisconfigured
         ? "missing gateway.remote.url (fallback local)"
-        : "local loopback";
+        : `local ${bindMode}`;
   const remoteFallbackNote = remoteMisconfigured
     ? "Warn: gateway.mode=remote but gateway.remote.url is missing; set gateway.remote.url or switch gateway.mode=local."
     : undefined;
@@ -143,7 +153,10 @@ export function buildGatewayConnectionDetails(
   // Security check: block ALL insecure ws:// to non-loopback addresses (CWE-319, CVSS 9.8)
   // This applies to the FINAL resolved URL, regardless of source (config, CLI override, etc).
   // Both credentials and chat/conversation data must not be transmitted over plaintext to remote hosts.
-  if (!isSecureWebSocketUrl(url)) {
+  // Exception: tailnet bind uses Tailscale's encrypted WireGuard tunnel (100.x.x.x CGNAT range),
+  // so plaintext ws:// to the Tailscale IP is safe — the transport layer is already encrypted.
+  const isTailnetSelfConnect = bindMode === "tailnet" && !urlOverride && !remoteUrl;
+  if (!isTailnetSelfConnect && !isSecureWebSocketUrl(url)) {
     throw new Error(
       [
         `SECURITY ERROR: Gateway URL "${url}" uses plaintext ws:// to a non-loopback address.`,
