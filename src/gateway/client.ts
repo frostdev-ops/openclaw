@@ -12,6 +12,7 @@ import {
   signDevicePayload,
 } from "../infra/device-identity.js";
 import { clearDevicePairing } from "../infra/device-pairing.js";
+import { isTailnetIPv4 } from "../infra/tailnet.js";
 import { normalizeFingerprint } from "../infra/tls/fingerprint.js";
 import { rawDataToString } from "../infra/ws.js";
 import { logDebug, logError } from "../logger.js";
@@ -116,7 +117,16 @@ export class GatewayClient {
     // Security check: block ALL plaintext ws:// to non-loopback addresses (CWE-319, CVSS 9.8)
     // This protects both credentials AND chat/conversation data from MITM attacks.
     // Device tokens may be loaded later in sendConnect(), so we block regardless of hasCredentials.
-    if (!isSecureWebSocketUrl(url)) {
+    // Exception: Tailscale IPs (100.64.0.0/10) use WireGuard encryption at the transport layer,
+    // so plaintext ws:// to a Tailscale address is safe.
+    const isTailscaleTarget = (() => {
+      try {
+        return isTailnetIPv4(new URL(url).hostname);
+      } catch {
+        return false;
+      }
+    })();
+    if (!isTailscaleTarget && !isSecureWebSocketUrl(url)) {
       // Safe hostname extraction - avoid throwing on malformed URLs in error path
       let displayHost = url;
       try {
