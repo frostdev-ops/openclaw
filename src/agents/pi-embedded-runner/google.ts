@@ -67,7 +67,15 @@ function buildInterSessionPrefix(message: AgentMessage): string {
   if (details.length === 0) {
     return INTER_SESSION_PREFIX_BASE;
   }
-  return `${INTER_SESSION_PREFIX_BASE} ${details.join(" ")}`;
+
+  const fromBits = [
+    provenance.sourceSessionKey ? `session ${provenance.sourceSessionKey}` : undefined,
+    provenance.sourceChannel ? `channel ${provenance.sourceChannel}` : undefined,
+    provenance.sourceTool ? `tool ${provenance.sourceTool}` : undefined,
+  ].filter(Boolean);
+
+  const humanReadable = fromBits.length > 0 ? ` [from ${fromBits.join(" · ")}]` : "";
+  return `${INTER_SESSION_PREFIX_BASE}${humanReadable} ${details.join(" ")}`;
 }
 
 function annotateInterSessionUserMessages(messages: AgentMessage[]): AgentMessage[] {
