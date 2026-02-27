@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenClaw Windows Node Client</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>OpenClaw Windows Node Client</h1>
+        <div class="status-row">
+          <span id="statusBadge" class="status-badge stopped">Stopped</span>
+          <span id="uptimeText" class="uptime-text"></span>
+        </div>
+        <div class="gateway-url-row">
+          <span class="gateway-label">Gateway:</span>
+          <input id="gatewayUrlDisplay" type="text" readonly class="gateway-url-input" />
+          <button id="copyGatewayUrlBtn" class="btn-small">Copy</button>
+        </div>
+        <div id="lastErrorRow" class="last-error-row" hidden>
+          <span id="lastErrorText" class="last-error-text"></span>
+          <button id="dismissErrorBtn" class="btn-dismiss">&times;</button>
+        </div>
+      </header>
+
+      <section class="panel controls">
+        <button id="startBtn">Start</button>
+        <button id="stopBtn">Stop</button>
+        <button id="restartBtn">Restart</button>
+        <button id="refreshBtn">Refresh</button>
+      </section>
+
+      <section id="approvalSection" class="panel approvals" hidden>
+        <h2>Pending Approvals</h2>
+        <div id="approvalList" class="approval-list"></div>
+      </section>
+
+      <section class="panel config">
+        <h2>Gateway Config</h2>
+        <label>
+          Host
+          <input id="host" type="text" placeholder="127.0.0.1" />
+        </label>
+        <label>
+          Port
+          <input id="port" type="number" min="1" max="65535" />
+        </label>
+        <label class="row">
+          <input id="tls" type="checkbox" />
+          Use TLS
+        </label>
+        <label>
+          TLS Fingerprint (optional)
+          <input id="tlsFingerprint" type="text" placeholder="sha256" />
+        </label>
+        <label>
+          Node ID (optional)
+          <input id="nodeId" type="text" />
+        </label>
+        <label>
+          Display Name (optional)
+          <input id="displayName" type="text" />
+        </label>
+        <label>
+          Gateway Token (optional)
+          <input id="gatewayToken" type="text" />
+        </label>
+        <label>
+          Gateway Password (optional)
+          <input id="gatewayPassword" type="password" />
+        </label>
+        <label class="row">
+          <input id="autoStartNode" type="checkbox" />
+          Auto-start node when app launches
+        </label>
+        <label class="row">
+          <input id="autoStartLogin" type="checkbox" />
+          Start on Windows login
+        </label>
+        <label class="row">
+          <input id="useExecHost" type="checkbox" />
+          Use Windows exec host
+        </label>
+        <label class="row">
+          <input id="execHostFallback" type="checkbox" />
+          Allow exec fallback
+        </label>
+        <button id="saveConfigBtn">Save Config</button>
+      </section>
+
+      <section class="panel logs">
+        <div class="logsHeader">
+          <h2>Node Logs</h2>
+          <div class="logsControls">
+            <label class="row auto-scroll-label">
+              <input id="autoScroll" type="checkbox" checked />
+              Auto-scroll
+            </label>
+            <button id="clearLogsBtn">Clear</button>
+          </div>
+        </div>
+        <div id="pairingCallout" class="pairing-callout" hidden>
+          <span>New node pair request detected. Run: <code>openclaw nodes pending &amp;&amp; openclaw nodes approve &lt;id&gt;</code></span>
+          <button id="dismissPairingBtn" class="btn-dismiss">&times;</button>
+        </div>
+        <pre id="logs"></pre>
+      </section>
+    </main>
+
+    <script src="./main.js" type="module"></script>
+  </body>
+</html>

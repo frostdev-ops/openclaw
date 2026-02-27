@@ -135,6 +135,10 @@
           - "src/gateway/protocol/**"
           - "src/gateway/server-methods/chat.ts"
           - "src/infra/control-ui-assets.ts"
+"platform/windows":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "apps/windows/**"
 
 "gateway":
   - changed-files:

@@ -1127,6 +1127,10 @@
                   "platforms/mac/skills",
                   "platforms/mac/peekaboo"
                 ]
+              },
+              {
+                "group": "Windows companion app",
+                "pages": ["platforms/windows/companion-app"]
               }
             ]
           },

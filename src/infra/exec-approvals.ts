@@ -134,6 +134,9 @@ export function resolveExecApprovalsPath(): string {
 }
 
 export function resolveExecApprovalsSocketPath(): string {
+  if (process.platform === "win32") {
+    return "\\\\.\\pipe\\openclaw-exec-host";
+  }
   return expandHomePrefix(DEFAULT_SOCKET);
 }
 

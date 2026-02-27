@@ -110,3 +110,9 @@ The node host stores its node id, token, display name, and gateway connection in
 - `~/.openclaw/exec-approvals.json`
 - [Exec approvals](/tools/exec-approvals)
 - `openclaw approvals --node <id|name|ip>` (edit from the Gateway)
+
+## Windows companion app
+
+On Windows, use the [Windows companion app](/platforms/windows/companion-app) instead
+of installing a system service. The app provides a system tray interface for managing
+the node host and supports native exec approval dialogs.

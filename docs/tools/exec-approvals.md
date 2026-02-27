@@ -317,6 +317,13 @@ Security notes:
 - Same-UID peer check.
 - Challenge/response (nonce + HMAC token + request hash) + short TTL.
 
+### Windows named pipe
+
+On Windows, the default exec-host socket path is `\\.\pipe\openclaw-exec-host` (a
+Windows named pipe). The [Windows companion app](/platforms/windows/companion-app)
+registers this path automatically.
+Custom paths can be set in `~/.openclaw/exec-approvals.json` under `socket.path`.
+
 ## System events
 
 Exec lifecycle is surfaced as system messages:
