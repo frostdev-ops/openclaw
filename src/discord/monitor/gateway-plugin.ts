@@ -34,7 +34,11 @@ export function createDiscordGatewayPlugin(params: {
   const intents = resolveDiscordGatewayIntents(params.discordConfig?.intents);
   const proxy = params.discordConfig?.proxy?.trim();
   const options = {
-    reconnect: { maxAttempts: 50 },
+    reconnect: {
+      maxAttempts: 100,
+      baseDelay: 500,
+      maxDelay: 5000,
+    },
     intents,
     autoInteractions: true,
   };

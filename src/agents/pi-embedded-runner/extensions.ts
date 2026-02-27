@@ -57,27 +57,8 @@ function buildContextPruningFactory(params: {
   return contextPruningExtension;
 }
 
-type LegacyCompactionConfig = {
-  mode?: string;
-  maxHistoryShare?: number;
-  tieredPath?: string;
-  tieredCompaction?: Record<string, unknown>;
-  smartPath?: string;
-  smartCompaction?: Record<string, unknown>;
-};
-
-function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" | "tiered" | "smart" {
-  const mode = (cfg?.agents?.defaults?.compaction as LegacyCompactionConfig | undefined)?.mode;
-  if (mode === "safeguard") {
-    return "safeguard";
-  }
-  if (mode === "tiered") {
-    return "tiered";
-  }
-  if (mode === "smart") {
-    return "smart";
-  }
-  return "default";
+function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" {
+  return cfg?.agents?.defaults?.compaction?.mode === "safeguard" ? "safeguard" : "default";
 }
 
 export function buildEmbeddedExtensionFactories(params: {
@@ -88,45 +69,24 @@ export function buildEmbeddedExtensionFactories(params: {
   model: Model<Api> | undefined;
 }): ExtensionFactory[] {
   const factories: ExtensionFactory[] = [];
-  const compactionMode = resolveCompactionMode(params.cfg);
-  const compactionCfg = params.cfg?.agents?.defaults?.compaction as
-    | LegacyCompactionConfig
-    | undefined;
-  const contextWindowInfo = resolveContextWindowInfo({
-    cfg: params.cfg,
-    provider: params.provider,
-    modelId: params.modelId,
-    modelContextWindow: params.model?.contextWindow,
-    defaultTokens: DEFAULT_CONTEXT_TOKENS,
-  });
-
-  if (compactionMode === "safeguard") {
+  if (resolveCompactionMode(params.cfg) === "safeguard") {
+    const compactionCfg = params.cfg?.agents?.defaults?.compaction;
+    const contextWindowInfo = resolveContextWindowInfo({
+      cfg: params.cfg,
+      provider: params.provider,
+      modelId: params.modelId,
+      modelContextWindow: params.model?.contextWindow,
+      defaultTokens: DEFAULT_CONTEXT_TOKENS,
+    });
     setCompactionSafeguardRuntime(params.sessionManager, {
       maxHistoryShare: compactionCfg?.maxHistoryShare,
       contextWindowTokens: contextWindowInfo.tokens,
+      identifierPolicy: compactionCfg?.identifierPolicy,
+      identifierInstructions: compactionCfg?.identifierInstructions,
       model: params.model,
     });
     factories.push(compactionSafeguardExtension);
-  } else if (compactionMode === "tiered") {
-    // Tiered compaction uses an external extension loaded via additionalExtensionPaths.
-    // We still set up the runtime so the extension can access config at runtime.
-    setCompactionSafeguardRuntime(params.sessionManager, {
-      maxHistoryShare: compactionCfg?.maxHistoryShare,
-      contextWindowTokens: contextWindowInfo.tokens,
-      tieredCompaction: compactionCfg?.tieredCompaction as Record<string, unknown>,
-      model: params.model,
-    });
-  } else if (compactionMode === "smart") {
-    // Smart compaction uses an external extension loaded via additionalExtensionPaths.
-    setCompactionSafeguardRuntime(params.sessionManager, {
-      maxHistoryShare: compactionCfg?.maxHistoryShare,
-      contextWindowTokens: contextWindowInfo.tokens,
-      smartCompaction: compactionCfg?.smartCompaction as Record<string, unknown>,
-      tieredCompaction: compactionCfg?.tieredCompaction as Record<string, unknown>,
-      model: params.model,
-    });
   }
-
   const pruningFactory = buildContextPruningFactory(params);
   if (pruningFactory) {
     factories.push(pruningFactory);

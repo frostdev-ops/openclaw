@@ -79,18 +79,15 @@ export const AgentDefaultsSchema = z
       .optional(),
     compaction: z
       .object({
-        mode: z
-          .union([
-            z.literal("default"),
-            z.literal("safeguard"),
-            z.literal("tiered"),
-            z.literal("smart"),
-          ])
-          .optional(),
+        mode: z.union([z.literal("default"), z.literal("safeguard")]).optional(),
         reserveTokens: z.number().int().nonnegative().optional(),
         keepRecentTokens: z.number().int().positive().optional(),
         reserveTokensFloor: z.number().int().nonnegative().optional(),
         maxHistoryShare: z.number().min(0.1).max(0.9).optional(),
+        identifierPolicy: z
+          .union([z.literal("strict"), z.literal("off"), z.literal("custom")])
+          .optional(),
+        identifierInstructions: z.string().optional(),
         memoryFlush: z
           .object({
             enabled: z.boolean().optional(),
@@ -100,25 +97,13 @@ export const AgentDefaultsSchema = z
           })
           .strict()
           .optional(),
-        tieredPath: z.string().optional(),
-        tieredCompaction: z
-          .object({
-            keepLastMessages: z.number().int().positive().optional(),
-            actionBulletPrompt: z.string().optional(),
-          })
-          .strict()
-          .optional(),
-        smartPath: z.string().optional(),
-        smartCompaction: z
-          .object({
-            keepLastMessages: z.number().int().positive().optional(),
-            actionBulletPrompt: z.string().optional(),
-            enableBoundaryDetection: z.boolean().optional(),
-            enableVectorArchive: z.boolean().optional(),
-            blurbMaxTokens: z.number().int().positive().optional(),
-            includeRecoveryInstructions: z.boolean().optional(),
-          })
-          .strict()
+      })
+      .strict()
+      .optional(),
+    embeddedPi: z
+      .object({
+        projectSettingsPolicy: z
+          .union([z.literal("trusted"), z.literal("sanitize"), z.literal("ignore")])
           .optional(),
       })
       .strict()
