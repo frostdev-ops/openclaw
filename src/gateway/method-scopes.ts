@@ -80,6 +80,15 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "talk.config",
     "agents.files.list",
     "agents.files.get",
+    "metrics.system",
+    "metrics.process",
+    "network.connections",
+    "network.discovery",
+    "diagnostics.sessions",
+    "diagnostics.webhooks",
+    "activity.recent",
+    "activity.stats",
+    "alerts.list",
   ],
   [WRITE_SCOPE]: [
     "send",
@@ -98,6 +107,7 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "chat.abort",
     "browser.request",
     "push.test",
+    "alerts.acknowledge",
   ],
   [ADMIN_SCOPE]: [
     "channels.logout",
@@ -122,6 +132,8 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "set-heartbeats",
     "system-event",
     "agents.files.set",
+    "diagnostics.environment",
+    "alerts.config",
   ],
 };
 

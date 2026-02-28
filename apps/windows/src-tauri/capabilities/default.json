@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default permissions for the OpenClaw Windows Node Client",
+  "description": "Default permissions for the OpenClaw Node Client",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "autostart:default"]
+  "permissions": ["core:default", "dialog:default", "dialog:allow-open", "autostart:default", "os:default"]
 }

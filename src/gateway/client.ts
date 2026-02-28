@@ -265,13 +265,15 @@ export class GatewayClient {
     // Legacy compatibility: keep `auth.token` populated for device-token auth when
     // no explicit shared token is present.
     const authToken = explicitGatewayToken ?? resolvedDeviceToken;
-    const authPassword = this.opts.password?.trim() || undefined;
+    const rawPassword = this.opts.password;
+    const authPassword =
+      (typeof rawPassword === "string" ? rawPassword.trim() : undefined) || undefined;
     const auth =
       authToken || authPassword || resolvedDeviceToken
         ? {
-            token: authToken,
-            deviceToken: resolvedDeviceToken,
-            password: authPassword,
+            ...(authToken != null && { token: authToken }),
+            ...(resolvedDeviceToken != null && { deviceToken: resolvedDeviceToken }),
+            ...(authPassword != null && { password: authPassword }),
           }
         : undefined;
     const signedAtMs = Date.now();

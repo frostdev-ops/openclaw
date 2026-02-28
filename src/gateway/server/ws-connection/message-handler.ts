@@ -671,6 +671,14 @@ export function attachGatewayWsMessageHandler(params: {
             nonce: providedNonce,
           });
           if (!payloadVersion) {
+            // Log enough detail to diagnose payload mismatches without exposing full key material.
+            logWsControl.warn(
+              `device-signature-invalid conn=${connId} client=${connectParams.client.id} ` +
+                `mode=${connectParams.client.mode} role=${role} platform=${connectParams.client.platform ?? ""} ` +
+                `deviceId=${device.id.slice(0, 16)}... scopes=${scopes.join(",")} ` +
+                `hasToken=${Boolean(connectParams.auth?.token ?? connectParams.auth?.deviceToken)} ` +
+                `signedAt=${signedAt}`,
+            );
             rejectDeviceSignatureInvalid();
             return;
           }

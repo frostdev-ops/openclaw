@@ -96,6 +96,19 @@ const BASE_METHODS = [
   "chat.history",
   "chat.abort",
   "chat.send",
+  // Metrics, network, diagnostics, activity, alerts
+  "metrics.system",
+  "metrics.process",
+  "network.connections",
+  "network.discovery",
+  "diagnostics.environment",
+  "diagnostics.sessions",
+  "diagnostics.webhooks",
+  "activity.recent",
+  "activity.stats",
+  "alerts.list",
+  "alerts.acknowledge",
+  "alerts.config",
 ];
 
 export function listGatewayMethods(): string[] {

@@ -1,3 +1,7 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod gateway;
+
 use directories::BaseDirs;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
@@ -8,16 +12,19 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+
+#[cfg(not(target_os = "windows"))]
+use std::os::unix::process::CommandExt as UnixCommandExt;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -27,6 +34,147 @@ const APPROVAL_TIMEOUT_MS: u64 = 120_000;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "windows")]
+const OPENCLAW_BIN_NAMES: &[&str] = &["openclaw.cmd", "openclaw.ps1", "openclaw.exe"];
+#[cfg(not(target_os = "windows"))]
+const OPENCLAW_BIN_NAMES: &[&str] = &["openclaw"];
+
+#[cfg(target_os = "windows")]
+const PATH_SEP: &str = ";";
+#[cfg(not(target_os = "windows"))]
+const PATH_SEP: &str = ":";
+
+// ---------------------------------------------------------------------------
+// AppImage environment sanitization (Linux only)
+// ---------------------------------------------------------------------------
+
+/// Path-list env vars that AppImage runtimes may inject with SquashFS mount
+/// entries. Each entry pointing into `$APPDIR` must be filtered out so child
+/// processes don't inherit stale/broken library paths.
+#[cfg(target_os = "linux")]
+const APPIMAGE_PATH_LIST_VARS: &[&str] = &[
+    "LD_LIBRARY_PATH",
+    "PATH",
+    "XDG_DATA_DIRS",
+    "QT_PLUGIN_PATH",
+    "GIO_MODULE_DIR",
+    "GTK_PATH",
+    "GST_PLUGIN_SYSTEM_PATH",
+];
+
+/// Point (single-value) env vars that AppImage runtimes may set to paths
+/// inside the SquashFS mount. If the value contains `$APPDIR`, the var is
+/// either restored from the `APPIMAGE_ORIGINAL_*` backup or removed entirely.
+#[cfg(target_os = "linux")]
+const APPIMAGE_POINT_VARS: &[&str] = &[
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "GDK_PIXBUF_MODULE_FILE",
+    "GDK_PIXBUF_MODULEDIR",
+    "GSETTINGS_SCHEMA_DIR",
+    "PERLLIB",
+];
+
+/// Identity vars set by the AppImage runtime itself — always remove so child
+/// processes don't think they're running inside an AppImage.
+#[cfg(target_os = "linux")]
+const APPIMAGE_IDENTITY_VARS: &[&str] = &["APPDIR", "APPIMAGE", "OWD", "ARGV0"];
+
+/// Detect if we're running inside an AppImage and apply env sanitization to
+/// the given `Command` so child processes don't inherit stale SquashFS paths.
+#[cfg(target_os = "linux")]
+fn sanitize_appimage_env(cmd: &mut std::process::Command) {
+    let appdir = match std::env::var("APPDIR") {
+        Ok(d) if !d.is_empty() => d,
+        _ => return, // not running as AppImage
+    };
+
+    // Path-list vars: filter out entries that start with $APPDIR
+    for &var in APPIMAGE_PATH_LIST_VARS {
+        if let Ok(val) = std::env::var(var) {
+            let filtered: Vec<&str> = val
+                .split(':')
+                .filter(|entry| !entry.starts_with(&appdir))
+                .collect();
+            if filtered.is_empty() {
+                // All entries were AppDir-scoped; check for backup
+                let backup_key = format!("APPIMAGE_ORIGINAL_{}", var);
+                if let Ok(orig) = std::env::var(&backup_key) {
+                    cmd.env(var, orig);
+                } else {
+                    cmd.env_remove(var);
+                }
+            } else {
+                cmd.env(var, filtered.join(":"));
+            }
+        }
+    }
+
+    // Point vars: remove if value contains $APPDIR
+    for &var in APPIMAGE_POINT_VARS {
+        if let Ok(val) = std::env::var(var) {
+            if val.contains(&appdir) {
+                let backup_key = format!("APPIMAGE_ORIGINAL_{}", var);
+                if let Ok(orig) = std::env::var(&backup_key) {
+                    cmd.env(var, orig);
+                } else {
+                    cmd.env_remove(var);
+                }
+            }
+        }
+    }
+
+    // Identity vars: always remove
+    for &var in APPIMAGE_IDENTITY_VARS {
+        cmd.env_remove(var);
+    }
+}
+
+/// Async (tokio) version for `run_exec_command`.
+#[cfg(target_os = "linux")]
+fn sanitize_appimage_env_tokio(cmd: &mut tokio::process::Command) {
+    let appdir = match std::env::var("APPDIR") {
+        Ok(d) if !d.is_empty() => d,
+        _ => return,
+    };
+
+    for &var in APPIMAGE_PATH_LIST_VARS {
+        if let Ok(val) = std::env::var(var) {
+            let filtered: Vec<&str> = val
+                .split(':')
+                .filter(|entry| !entry.starts_with(&appdir))
+                .collect();
+            if filtered.is_empty() {
+                let backup_key = format!("APPIMAGE_ORIGINAL_{}", var);
+                if let Ok(orig) = std::env::var(&backup_key) {
+                    cmd.env(var, orig);
+                } else {
+                    cmd.env_remove(var);
+                }
+            } else {
+                cmd.env(var, filtered.join(":"));
+            }
+        }
+    }
+
+    for &var in APPIMAGE_POINT_VARS {
+        if let Ok(val) = std::env::var(var) {
+            if val.contains(&appdir) {
+                let backup_key = format!("APPIMAGE_ORIGINAL_{}", var);
+                if let Ok(orig) = std::env::var(&backup_key) {
+                    cmd.env(var, orig);
+                } else {
+                    cmd.env_remove(var);
+                }
+            }
+        }
+    }
+
+    for &var in APPIMAGE_IDENTITY_VARS {
+        cmd.env_remove(var);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -44,8 +192,18 @@ struct NodeClientConfig {
     auto_start_node: bool,
     #[serde(default)]
     use_exec_host: bool,
+    #[serde(default = "default_true")]
+    exec_host_fallback: bool,
     gateway_token: Option<String>,
     gateway_password: Option<String>,
+    #[serde(default)]
+    install_path: Option<String>,
+    #[serde(default = "default_true")]
+    use_bundled_runtime: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for NodeClientConfig {
@@ -59,8 +217,11 @@ impl Default for NodeClientConfig {
             display_name: None,
             auto_start_node: true,
             use_exec_host: false,
+            exec_host_fallback: true,
             gateway_token: None,
             gateway_password: None,
+            install_path: None,
+            use_bundled_runtime: true,
         }
     }
 }
@@ -144,7 +305,6 @@ struct PendingApproval {
 struct AppState {
     config: Mutex<NodeClientConfig>,
     runtime: Mutex<RuntimeState>,
-    approval_token: Mutex<String>,
     pending_approvals: Mutex<Vec<PendingApproval>>,
 }
 
@@ -246,11 +406,61 @@ struct ExecApprovalsSocket {
     token: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ExecApprovalsDefaults {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    security: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ask: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ask_fallback: Option<String>,
+    #[serde(flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ExecApprovalsAgent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    security: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ask: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ask_fallback: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowlist: Option<Vec<AllowlistEntry>>,
+    #[serde(flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AllowlistEntry {
+    pattern: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_used_at: Option<u64>,
+    #[serde(flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ExecPolicyConfig {
+    security: Option<String>,
+    ask: Option<String>,
+    ask_fallback: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct ExecApprovalsFile {
     version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     socket: Option<ExecApprovalsSocket>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    defaults: Option<ExecApprovalsDefaults>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agents: Option<HashMap<String, ExecApprovalsAgent>>,
     #[serde(flatten)]
     extra: HashMap<String, serde_json::Value>,
 }
@@ -278,7 +488,15 @@ fn openclaw_dir() -> Result<PathBuf, String> {
 }
 
 fn config_path() -> Result<PathBuf, String> {
-    Ok(openclaw_dir()?.join("windows-node-client.json"))
+    let dir = openclaw_dir()?;
+    let new_path = dir.join("node-client.json");
+    if !new_path.exists() {
+        let legacy = dir.join("windows-node-client.json");
+        if legacy.exists() {
+            let _ = fs::rename(&legacy, &new_path);
+        }
+    }
+    Ok(new_path)
 }
 
 fn exec_approvals_path() -> Result<PathBuf, String> {
@@ -304,16 +522,116 @@ fn exec_host_socket_path() -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// OpenClaw config import
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+struct OpenClawConfig {
+    gateway: Option<OpenClawGateway>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct OpenClawGateway {
+    port: Option<u16>,
+    auth: Option<OpenClawAuth>,
+    tls: Option<OpenClawTls>,
+    remote: Option<OpenClawRemote>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct OpenClawAuth {
+    token: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct OpenClawTls {
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OpenClawRemote {
+    tls_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OpenClawNodeJson {
+    node_id: Option<String>,
+    display_name: Option<String>,
+    gateway: Option<OpenClawNodeGateway>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct OpenClawNodeGateway {
+    host: Option<String>,
+    port: Option<u16>,
+    tls: Option<bool>,
+}
+
+/// Try to import gateway fields from the existing openclaw CLI config.
+/// Returns `None` if the file is missing, has no gateway section, or fails to parse.
+fn try_import_from_openclaw_config() -> Option<NodeClientConfig> {
+    let dir = openclaw_dir().ok()?;
+    let path = dir.join("openclaw.json");
+    let raw = fs::read_to_string(&path).ok()?;
+    let oc: OpenClawConfig = serde_json5::from_str(&raw).ok()?;
+    let gw = oc.gateway?;
+
+    let mut cfg = NodeClientConfig::default();
+    if let Some(port) = gw.port {
+        cfg.port = port;
+    }
+    if let Some(auth) = &gw.auth {
+        cfg.gateway_token = auth.token.clone();
+        cfg.gateway_password = auth.password.clone();
+    }
+    if let Some(tls) = &gw.tls {
+        cfg.tls = tls.enabled.unwrap_or(false);
+    }
+    if let Some(remote) = &gw.remote {
+        cfg.tls_fingerprint = remote.tls_fingerprint.clone();
+    }
+
+    // Also import node identity + gateway details from node.json
+    let node_path = dir.join("node.json");
+    if let Ok(node_raw) = fs::read_to_string(&node_path) {
+        if let Ok(node_cfg) = serde_json::from_str::<OpenClawNodeJson>(&node_raw) {
+            if node_cfg.node_id.is_some() {
+                cfg.node_id = node_cfg.node_id;
+            }
+            if node_cfg.display_name.is_some() {
+                cfg.display_name = node_cfg.display_name;
+            }
+            // node.json gateway overrides openclaw.json gateway when present
+            if let Some(gw) = node_cfg.gateway {
+                if let Some(host) = gw.host {
+                    cfg.host = host;
+                }
+                if let Some(port) = gw.port {
+                    cfg.port = port;
+                }
+                if let Some(tls) = gw.tls {
+                    cfg.tls = tls;
+                }
+            }
+        }
+    }
+
+    Some(cfg)
+}
+
 fn load_config() -> NodeClientConfig {
     let path = match config_path() {
         Ok(path) => path,
-        Err(_) => return NodeClientConfig::default(),
+        Err(_) => return try_import_from_openclaw_config().unwrap_or_default(),
     };
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(_) => return NodeClientConfig::default(),
-    };
-    serde_json::from_str(&raw).unwrap_or_default()
+    match fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => try_import_from_openclaw_config().unwrap_or_default(),
+    }
 }
 
 fn save_config(config: &NodeClientConfig) -> Result<(), String> {
@@ -322,7 +640,54 @@ fn save_config(config: &NodeClientConfig) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let payload = serde_json::to_string_pretty(config).map_err(|err| err.to_string())?;
-    fs::write(path, format!("{}\n", payload)).map_err(|err| err.to_string())
+
+    // Atomic write: temp file + rename (matches exec-approvals pattern)
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, format!("{}\n", payload)).map_err(|err| err.to_string())?;
+    fs::rename(&tmp_path, &path).map_err(|err| err.to_string())?;
+
+    restrict_file_permissions(&path);
+    Ok(())
+}
+
+/// Restrict a file to owner-only access (contains secrets).
+fn restrict_file_permissions(path: &Path) {
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: files in %USERPROFILE%\.openclaw\ inherit user-private ACLs
+        // from the profile directory. Explicit ACL manipulation via icacls is
+        // fragile (domain-join, empty USERNAME, console flash). Parent directory
+        // inheritance provides sufficient protection.
+        let _ = path;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// Recover files whose ACLs were corrupted by the old `restrict_file_permissions`
+/// implementation (which stripped all inherited ACEs and then failed the grant).
+/// Resets the file's ACL to inherit from the parent directory.
+#[cfg(target_os = "windows")]
+fn try_recover_file_acls(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    if fs::read(path).is_ok() {
+        return; // File readable, no recovery needed
+    }
+    // File exists but is unreadable — reset ACLs to inherit from parent
+    let path_str = path.to_string_lossy();
+    let _ = Command::new("icacls")
+        .args([path_str.as_ref(), "/reset"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .status();
 }
 
 // ---------------------------------------------------------------------------
@@ -343,12 +708,16 @@ fn merge_exec_approvals_socket(
         serde_json::from_str(&raw).unwrap_or(ExecApprovalsFile {
             version: 1,
             socket: None,
+            defaults: None,
+            agents: None,
             extra: HashMap::new(),
         })
     } else {
         ExecApprovalsFile {
             version: 1,
             socket: None,
+            defaults: None,
+            agents: None,
             extra: HashMap::new(),
         }
     };
@@ -365,6 +734,9 @@ fn merge_exec_approvals_socket(
     fs::write(&tmp_path, format!("{}\n", json)).map_err(|e| e.to_string())?;
     fs::rename(&tmp_path, file_path).map_err(|e| e.to_string())?;
 
+    // Restrict to owner-only; file contains the shared exec-host token
+    restrict_file_permissions(file_path);
+
     Ok(())
 }
 
@@ -377,6 +749,8 @@ fn clear_exec_approvals_socket(file_path: &Path) -> Result<(), String> {
         serde_json::from_str(&raw).unwrap_or(ExecApprovalsFile {
             version: 1,
             socket: None,
+            defaults: None,
+            agents: None,
             extra: HashMap::new(),
         });
 
@@ -390,6 +764,121 @@ fn clear_exec_approvals_socket(file_path: &Path) -> Result<(), String> {
     fs::write(&tmp_path, format!("{}\n", json)).map_err(|e| e.to_string())?;
     fs::rename(&tmp_path, file_path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Exec-approvals policy commands
+// ---------------------------------------------------------------------------
+
+const DEFAULT_AGENT_ID: &str = "defaults";
+
+fn read_exec_approvals_file() -> Result<ExecApprovalsFile, String> {
+    let path = exec_approvals_path()?;
+    if path.exists() {
+        let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&raw).map_err(|e| e.to_string())
+    } else {
+        Ok(ExecApprovalsFile {
+            version: 1,
+            socket: None,
+            defaults: None,
+            agents: None,
+            extra: HashMap::new(),
+        })
+    }
+}
+
+fn write_exec_approvals_file(file: &ExecApprovalsFile) -> Result<(), String> {
+    let path = exec_approvals_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, format!("{}\n", json)).map_err(|e| e.to_string())?;
+    fs::rename(&tmp_path, &path).map_err(|e| e.to_string())?;
+    restrict_file_permissions(&path);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_exec_policy() -> Result<ExecPolicyConfig, String> {
+    let file = read_exec_approvals_file()?;
+    let defaults = file.defaults.unwrap_or_default();
+    Ok(ExecPolicyConfig {
+        security: defaults.security,
+        ask: defaults.ask,
+        ask_fallback: defaults.ask_fallback,
+    })
+}
+
+#[tauri::command]
+fn set_exec_policy(
+    security: Option<String>,
+    ask: Option<String>,
+    ask_fallback: Option<String>,
+) -> Result<(), String> {
+    let mut file = read_exec_approvals_file()?;
+    let mut defaults = file.defaults.unwrap_or_default();
+    defaults.security = security;
+    defaults.ask = ask;
+    defaults.ask_fallback = ask_fallback;
+    file.defaults = Some(defaults);
+    write_exec_approvals_file(&file)
+}
+
+#[tauri::command]
+fn get_exec_allowlist() -> Result<Vec<AllowlistEntry>, String> {
+    let file = read_exec_approvals_file()?;
+    let agents = file.agents.unwrap_or_default();
+    let agent = agents.get(DEFAULT_AGENT_ID).cloned().unwrap_or_default();
+    Ok(agent.allowlist.unwrap_or_default())
+}
+
+#[tauri::command]
+fn add_allowlist_entry(pattern: String) -> Result<(), String> {
+    let trimmed = pattern.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("pattern cannot be empty".to_string());
+    }
+    let mut file = read_exec_approvals_file()?;
+    let mut agents = file.agents.unwrap_or_default();
+    let mut agent = agents.remove(DEFAULT_AGENT_ID).unwrap_or_default();
+    let mut allowlist = agent.allowlist.unwrap_or_default();
+
+    // Don't add duplicates
+    if allowlist.iter().any(|e| e.pattern == trimmed) {
+        return Ok(());
+    }
+
+    allowlist.push(AllowlistEntry {
+        pattern: trimmed,
+        last_used_at: None,
+        extra: HashMap::new(),
+    });
+    agent.allowlist = Some(allowlist);
+    agents.insert(DEFAULT_AGENT_ID.to_string(), agent);
+    file.agents = Some(agents);
+    write_exec_approvals_file(&file)
+}
+
+#[tauri::command]
+fn remove_allowlist_entry(pattern: String) -> Result<(), String> {
+    let mut file = read_exec_approvals_file()?;
+    let mut agents = file.agents.unwrap_or_default();
+    let mut agent = match agents.remove(DEFAULT_AGENT_ID) {
+        Some(a) => a,
+        None => return Ok(()),
+    };
+    let allowlist = agent.allowlist.unwrap_or_default();
+    let filtered: Vec<AllowlistEntry> = allowlist
+        .into_iter()
+        .filter(|e| e.pattern != pattern)
+        .collect();
+    agent.allowlist = if filtered.is_empty() { None } else { Some(filtered) };
+    agents.insert(DEFAULT_AGENT_ID.to_string(), agent);
+    file.agents = Some(agents);
+    write_exec_approvals_file(&file)
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +909,7 @@ fn push_log_line(app: &AppHandle, line: impl Into<String>) {
                 runtime.logs.pop_front();
             }
             runtime.logs.push_back(text.clone());
-        }
+        };
     }
     let _ = app.emit("node-log", text);
 }
@@ -441,11 +930,49 @@ where
                 Err(_) => break,
             }
         }
+        // Pipe closed — child likely exited; detect exit and emit status change
+        check_and_emit_child_exit(&app);
     });
+}
+
+/// Called when a log reader reaches EOF (child likely exited).
+/// Detects exit via refresh_process_state and emits the updated status event.
+fn check_and_emit_child_exit(app: &AppHandle) {
+    let (exit_log, status_str) = {
+        let state = app.state::<AppState>();
+        let Ok(mut runtime) = state.runtime.lock() else {
+            return;
+        };
+        let (running, maybe_exit_log) = refresh_process_state(&mut runtime);
+        if running {
+            return;
+        }
+        let status_str = runtime.node_status.as_ref().map(|s| s.as_str().to_string());
+        (maybe_exit_log, status_str)
+    };
+    // Push log outside the lock (push_log_line re-locks)
+    if let Some(exit_log) = exit_log {
+        push_log_line(app, exit_log);
+    }
+    if let Some(status) = status_str {
+        let _ = app.emit("node-status-changed", &status);
+    }
 }
 
 fn update_node_status_from_log(app: &AppHandle, line: &str) {
     let lower = line.to_lowercase();
+
+    // Surface a user-friendly hint when the gateway rejects connect params
+    // (typically means the running gateway is an older version).
+    if lower.contains("invalid connect params") {
+        push_log_line(
+            app,
+            "Warning: Gateway rejected connect params — the running gateway may be an older \
+             version. Update with: npm install -g openclaw@latest"
+                .to_string(),
+        );
+    }
+
     let new_status = if lower.contains("connected to gateway") || lower.contains("node is running")
     {
         Some(NodeStatus::Running)
@@ -453,7 +980,7 @@ fn update_node_status_from_log(app: &AppHandle, line: &str) {
         Some(NodeStatus::Reconnecting)
     } else if lower.contains("disconnected") {
         Some(NodeStatus::Disconnected)
-    } else if lower.contains("error") || lower.contains("fatal") {
+    } else if lower.contains("error") || lower.contains("fatal") || lower.contains("failed") {
         Some(NodeStatus::Error)
     } else {
         None
@@ -499,6 +1026,371 @@ fn refresh_process_state(runtime: &mut RuntimeState) -> (bool, Option<String>) {
 }
 
 // ---------------------------------------------------------------------------
+// Binary discovery
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveryResult {
+    bin_dir: String,
+    bin_path: String,
+    bin_name: String,
+    method: String,
+}
+
+fn search_path_string(path_str: &str, method: &str) -> Option<DiscoveryResult> {
+    for dir in path_str.split(PATH_SEP) {
+        let dir = dir.trim();
+        if dir.is_empty() {
+            continue;
+        }
+        let dir_path = std::path::Path::new(dir);
+        for &name in OPENCLAW_BIN_NAMES {
+            let candidate = dir_path.join(name);
+            if candidate.is_file() {
+                return Some(DiscoveryResult {
+                    bin_dir: dir.to_string(),
+                    bin_path: candidate.to_string_lossy().to_string(),
+                    bin_name: name.to_string(),
+                    method: method.to_string(),
+                });
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn find_nvm_bin(home: &std::path::Path) -> Option<std::path::PathBuf> {
+    // Try reading the default alias file (e.g. "v20.11.0" or "lts/iron")
+    let alias_path = home.join(".nvm").join("alias").join("default");
+    if let Ok(version) = fs::read_to_string(&alias_path) {
+        let version = version.trim().to_string();
+        let bin = home
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join(&version)
+            .join("bin");
+        if bin.is_dir() {
+            return Some(bin);
+        }
+        // Resolve one level of indirection (e.g. "lts/iron" -> another alias file)
+        let resolved_path = home.join(".nvm").join("alias").join(&version);
+        if let Ok(resolved) = fs::read_to_string(&resolved_path) {
+            let resolved = resolved.trim().to_string();
+            let bin = home
+                .join(".nvm")
+                .join("versions")
+                .join("node")
+                .join(&resolved)
+                .join("bin");
+            if bin.is_dir() {
+                return Some(bin);
+            }
+        }
+    }
+    // Fallback: scan and pick the lexicographically latest version
+    let versions_dir = home.join(".nvm").join("versions").join("node");
+    let mut entries: Vec<_> = fs::read_dir(&versions_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    for entry in entries {
+        let bin = entry.path().join("bin");
+        if bin.is_dir() {
+            return Some(bin);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn find_nvm_windows_bin(nvm_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut entries: Vec<_> = fs::read_dir(nvm_root)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    for entry in entries {
+        if entry.path().is_dir() {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+fn discover_via_well_known_dirs() -> Option<DiscoveryResult> {
+    let home = BaseDirs::new().map(|b| b.home_dir().to_path_buf());
+
+    #[cfg(not(target_os = "windows"))]
+    let candidates: Vec<std::path::PathBuf> = {
+        let mut dirs = vec![
+            std::path::PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
+            std::path::PathBuf::from("/opt/homebrew/bin"),
+        ];
+        if let Some(ref h) = home {
+            if let Some(nvm_bin) = find_nvm_bin(h) {
+                dirs.push(nvm_bin);
+            }
+            dirs.push(h.join(".volta").join("bin"));
+            dirs.push(
+                h.join(".local")
+                    .join("share")
+                    .join("fnm")
+                    .join("aliases")
+                    .join("default")
+                    .join("bin"),
+            );
+            dirs.push(h.join(".local").join("share").join("pnpm"));
+            dirs.push(h.join(".bun").join("bin"));
+            dirs.push(h.join(".local").join("bin"));
+        }
+        dirs.push(std::path::PathBuf::from("/usr/local/bin"));
+        dirs.push(std::path::PathBuf::from("/usr/bin"));
+        dirs
+    };
+
+    #[cfg(target_os = "windows")]
+    let candidates: Vec<std::path::PathBuf> = {
+        let mut dirs: Vec<std::path::PathBuf> = vec![];
+
+        // npm global
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            dirs.push(std::path::PathBuf::from(&appdata).join("npm"));
+        }
+
+        // fnm: active multishell path first, then scan multishells dir, then alias fallback
+        if let Ok(multishell) = std::env::var("FNM_MULTISHELL_PATH") {
+            dirs.push(std::path::PathBuf::from(multishell));
+        }
+        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+            let multishells_dir =
+                std::path::PathBuf::from(&localappdata).join("fnm_multishells");
+            if multishells_dir.is_dir() {
+                if let Ok(entries) = fs::read_dir(&multishells_dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_dir() {
+                            dirs.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            dirs.push(
+                std::path::PathBuf::from(&appdata)
+                    .join("fnm")
+                    .join("aliases")
+                    .join("default"),
+            );
+        }
+
+        // nvm-windows: NVM_SYMLINK first, then NVM_HOME, then APPDATA fallback
+        if let Ok(symlink) = std::env::var("NVM_SYMLINK") {
+            dirs.push(std::path::PathBuf::from(symlink));
+        }
+        if let Ok(nvm_home) = std::env::var("NVM_HOME") {
+            let nvm_root = std::path::PathBuf::from(nvm_home);
+            if let Some(nvm_bin) = find_nvm_windows_bin(&nvm_root) {
+                dirs.push(nvm_bin);
+            }
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let nvm_root = std::path::PathBuf::from(&appdata).join("nvm");
+            if let Some(nvm_bin) = find_nvm_windows_bin(&nvm_root) {
+                dirs.push(nvm_bin);
+            }
+        }
+
+        // Volta: VOLTA_HOME env var first, then LOCALAPPDATA fallback
+        if let Ok(volta_home) = std::env::var("VOLTA_HOME") {
+            dirs.push(std::path::PathBuf::from(volta_home).join("bin"));
+        }
+        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+            dirs.push(
+                std::path::PathBuf::from(&localappdata)
+                    .join("Volta")
+                    .join("bin"),
+            );
+        }
+
+        // Scoop: SCOOP env var first, then home fallback
+        if let Ok(scoop) = std::env::var("SCOOP") {
+            dirs.push(std::path::PathBuf::from(scoop).join("shims"));
+        }
+        if let Some(ref h) = home {
+            dirs.push(h.join("scoop").join("shims"));
+        }
+
+        // pnpm global
+        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+            dirs.push(std::path::PathBuf::from(&localappdata).join("pnpm"));
+        }
+
+        // Chocolatey
+        if let Ok(allusers) = std::env::var("ALLUSERSPROFILE") {
+            dirs.push(
+                std::path::PathBuf::from(&allusers)
+                    .join("chocolatey")
+                    .join("bin"),
+            );
+        }
+
+        // Direct Node.js install
+        dirs.push(std::path::PathBuf::from(r"C:\Program Files\nodejs"));
+        dirs
+    };
+
+    for dir in &candidates {
+        if dir.is_dir() {
+            for &name in OPENCLAW_BIN_NAMES {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(DiscoveryResult {
+                        bin_dir: dir.to_string_lossy().to_string(),
+                        bin_path: candidate.to_string_lossy().to_string(),
+                        bin_name: name.to_string(),
+                        method: "well-known-dirs".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+fn discover_via_login_shell_path() -> Option<DiscoveryResult> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let output = Command::new(&shell)
+            .args(["-l", "-c", "echo $PATH"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        let path_str = String::from_utf8_lossy(&output.stdout);
+        let path_str = path_str.trim();
+        if path_str.is_empty() {
+            return None;
+        }
+        search_path_string(path_str, "login-shell")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        fn extract_reg_path(output: &std::process::Output) -> String {
+            let s = String::from_utf8_lossy(&output.stdout);
+            for line in s.lines() {
+                // REG_EXPAND_SZ must be checked before REG_SZ (it's a prefix)
+                if let Some(pos) = line.find("REG_EXPAND_SZ") {
+                    return line[pos + "REG_EXPAND_SZ".len()..].trim().to_string();
+                }
+                if let Some(pos) = line.find("REG_SZ") {
+                    return line[pos + "REG_SZ".len()..].trim().to_string();
+                }
+            }
+            String::new()
+        }
+        let user_path = Command::new("reg")
+            .args(["query", r"HKCU\Environment", "/v", "Path"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| extract_reg_path(&o))
+            .unwrap_or_default();
+        let sys_path = Command::new("reg")
+            .args([
+                "query",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                "/v",
+                "Path",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| extract_reg_path(&o))
+            .unwrap_or_default();
+        let combined = format!("{};{}", user_path, sys_path);
+        if combined == ";" {
+            return None;
+        }
+        search_path_string(&combined, "registry-path")
+    }
+}
+
+fn discover_via_process_path() -> Option<DiscoveryResult> {
+    let path_str = std::env::var("PATH").unwrap_or_default();
+    if path_str.is_empty() {
+        return None;
+    }
+    search_path_string(&path_str, "process-path")
+}
+
+fn discover_openclaw_binary() -> Option<DiscoveryResult> {
+    discover_via_login_shell_path()
+        .or_else(|| discover_via_well_known_dirs())
+        .or_else(|| discover_via_process_path())
+}
+
+/// Resolve the openclaw binary path and its parent directory.
+/// Returns (bin_path, bin_dir). bin_dir is empty when falling back to bare "openclaw".
+fn resolve_openclaw_bin(config: &NodeClientConfig, app: &AppHandle) -> Result<(String, String), String> {
+    // Tier 0: bundled CLI code in app resources + system node
+    if config.use_bundled_runtime {
+        if let Ok(res_dir) = app.path().resource_dir() {
+            let mjs = res_dir.join("openclaw").join("openclaw.mjs");
+            if mjs.is_file() {
+                // Find system node binary via which/where
+                let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+                let which_cmd = if cfg!(windows) { "where" } else { "which" };
+                if let Ok(output) = std::process::Command::new(which_cmd)
+                    .arg(node_name)
+                    .output()
+                {
+                    let node_path = String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !node_path.is_empty() && Path::new(&node_path).is_file() {
+                        let sentinel = format!("{}::{}", node_path, mjs.display());
+                        return Ok((sentinel, res_dir.to_string_lossy().to_string()));
+                    }
+                }
+            }
+        }
+    }
+    // 1. Explicit install_path takes priority; verify binary exists there
+    if let Some(dir) = &config.install_path {
+        if !dir.is_empty() {
+            let dir_path = std::path::Path::new(dir.as_str());
+            for &name in OPENCLAW_BIN_NAMES {
+                let candidate = dir_path.join(name);
+                if candidate.is_file() {
+                    return Ok((candidate.to_string_lossy().to_string(), dir.clone()));
+                }
+            }
+            // install_path set but binary missing there — fall through to discovery
+        }
+    }
+    // 2. Auto-discover via login shell PATH, well-known dirs, or process PATH
+    if let Some(result) = discover_openclaw_binary() {
+        return Ok((result.bin_path, result.bin_dir));
+    }
+    // 3. Last resort: bare name (relies on the child process PATH)
+    Ok(("openclaw".to_string(), String::new()))
+}
+
+// ---------------------------------------------------------------------------
 // Node process management
 // ---------------------------------------------------------------------------
 
@@ -528,16 +1420,34 @@ fn start_node_internal(app: &AppHandle) -> Result<(), String> {
         let state = app.state::<AppState>();
         if let Ok(mut runtime) = state.runtime.lock() {
             runtime.node_status = Some(NodeStatus::Starting);
-        }
+        };
     }
     let _ = app.emit("node-status-changed", NodeStatus::Starting.as_str());
 
     let config = {
         let state = app.state::<AppState>();
-        state.config.lock().map_err(|err| err.to_string())?.clone()
+        let cfg = state.config.lock().map_err(|err| err.to_string())?.clone();
+        cfg
     };
 
-    let mut command = Command::new("openclaw");
+    let (openclaw_bin, bin_dir) = resolve_openclaw_bin(&config, app)?;
+    push_log_line(app, format!("using openclaw binary: {}", openclaw_bin));
+    // Sentinel "node_path::mjs_path" means bundled runtime: run `node openclaw.mjs ...`
+    let mut command = if openclaw_bin.contains("::") {
+        let mut parts = openclaw_bin.splitn(2, "::");
+        let node = parts.next().unwrap();
+        let mjs = parts.next().unwrap();
+        let mut c = Command::new(node);
+        c.arg(mjs);
+        c
+    } else {
+        Command::new(&openclaw_bin)
+    };
+
+    // Sanitize AppImage env vars before any other env modifications
+    #[cfg(target_os = "linux")]
+    sanitize_appimage_env(&mut command);
+
     command
         .arg("node")
         .arg("run")
@@ -574,6 +1484,9 @@ fn start_node_internal(app: &AppHandle) -> Result<(), String> {
     // Inject exec-host env var if configured
     if config.use_exec_host {
         command.env("OPENCLAW_NODE_EXEC_HOST", "app");
+        if !config.exec_host_fallback {
+            command.env("OPENCLAW_NODE_EXEC_FALLBACK", "0");
+        }
     }
     if let Some(ref token) = config.gateway_token {
         if !token.is_empty() {
@@ -582,13 +1495,54 @@ fn start_node_internal(app: &AppHandle) -> Result<(), String> {
     }
     if let Some(ref password) = config.gateway_password {
         if !password.is_empty() {
-            command.env("OPENCLAW_GATEWAY_PASSWORD", password);
+            command.arg("--password").arg(password);
+        }
+    }
+
+    // Suppress Node.js DEP0040 punycode deprecation warning (from transitive deps)
+    {
+        let existing = std::env::var("NODE_OPTIONS").unwrap_or_default();
+        let flag = "--disable-warning=DEP0040";
+        let node_opts = if existing.is_empty() {
+            flag.to_string()
+        } else {
+            format!("{} {}", existing, flag)
+        };
+        command.env("NODE_OPTIONS", node_opts);
+    }
+
+    // Prepend discovered bin_dir to child PATH so co-located `node` is findable
+    if !bin_dir.is_empty() {
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        command.env("PATH", format!("{}{}{}", bin_dir, PATH_SEP, current_path));
+    }
+
+    // Auto-save the discovered install path when it differs from the stored one
+    // Skip when using bundled runtime (bin_dir is the resources dir, not a user install)
+    if !bin_dir.is_empty() && !openclaw_bin.contains("::") {
+        let current = config.install_path.clone().unwrap_or_default();
+        if current != bin_dir {
+            let state = app.state::<AppState>();
+            if let Ok(mut cfg) = state.config.lock() {
+                cfg.install_path = Some(bin_dir.clone());
+                let _ = save_config(&cfg);
+            }
+            let _ = app.emit("install-path-detected", bin_dir.clone());
         }
     }
 
     #[cfg(target_os = "windows")]
     {
         command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    // Auto-SIGTERM child when parent dies (crash, OOM kill, etc.)
+    #[cfg(target_os = "linux")]
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
     }
 
     let mut child = command
@@ -613,6 +1567,34 @@ fn start_node_internal(app: &AppHandle) -> Result<(), String> {
         app,
         format!("started node host for gateway {}", config.gateway_url()),
     );
+
+    // Fallback: if the child is still alive after 5 s and status is still
+    // "Starting", the process likely connected (older CLI builds don't emit a
+    // "connected to gateway" log line). Transition to Running so the UI isn't
+    // stuck on "Starting" indefinitely.
+    {
+        let app_clone = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let state = app_clone.state::<AppState>();
+            let should_emit = {
+                let Ok(mut runtime) = state.runtime.lock() else {
+                    return;
+                };
+                let (running, _) = refresh_process_state(&mut runtime);
+                if running && runtime.node_status == Some(NodeStatus::Starting) {
+                    runtime.node_status = Some(NodeStatus::Running);
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_emit {
+                let _ = app_clone.emit("node-status-changed", NodeStatus::Running.as_str());
+            }
+        });
+    }
+
     Ok(())
 }
 
@@ -640,10 +1622,41 @@ fn stop_node_internal(app: &AppHandle) -> Result<(), String> {
     };
 
     if let Some(child) = maybe_child.as_mut() {
-        child
-            .kill()
-            .map_err(|err| format!("failed to stop node host: {}", err))?;
-        let _ = child.wait();
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Graceful shutdown: SIGTERM first, escalate to SIGKILL after 5s
+            let pid = child.id() as i32;
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => {
+                        if std::time::Instant::now() >= deadline {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(_) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            child
+                .kill()
+                .map_err(|err| format!("failed to stop node host: {}", err))?;
+            let _ = child.wait();
+        }
         push_log_line(app, "stopped node host process");
     }
 
@@ -651,7 +1664,7 @@ fn stop_node_internal(app: &AppHandle) -> Result<(), String> {
         let state = app.state::<AppState>();
         if let Ok(mut runtime) = state.runtime.lock() {
             runtime.node_status = Some(NodeStatus::Stopped);
-        }
+        };
     }
     let _ = app.emit("node-status-changed", NodeStatus::Stopped.as_str());
     Ok(())
@@ -687,6 +1700,11 @@ async fn run_exec_command(
     if argv.len() > 1 {
         cmd.args(&argv[1..]);
     }
+
+    // Sanitize AppImage env vars
+    #[cfg(target_os = "linux")]
+    sanitize_appimage_env_tokio(&mut cmd);
+
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -705,7 +1723,16 @@ async fn run_exec_command(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let child = match cmd.spawn() {
+    // Auto-SIGTERM child when parent dies
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             return ExecHostRunResult {
@@ -719,40 +1746,67 @@ async fn run_exec_command(
         }
     };
 
+    // Take stdout/stderr handles before waiting so we can read them on timeout
+    let stdout_handle = child.stdout.take();
+    let stderr_handle = child.stderr.take();
+
     let timeout = std::time::Duration::from_millis(
         timeout_ms
             .and_then(|ms| if ms > 0 { Some(ms as u64) } else { None })
             .unwrap_or(120_000),
     );
 
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => {
-            let code = output.status.code();
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => {
+            let stdout = if let Some(mut h) = stdout_handle {
+                let mut buf = Vec::new();
+                let _ = h.read_to_end(&mut buf).await;
+                String::from_utf8_lossy(&buf).to_string()
+            } else {
+                String::new()
+            };
+            let stderr = if let Some(mut h) = stderr_handle {
+                let mut buf = Vec::new();
+                let _ = h.read_to_end(&mut buf).await;
+                String::from_utf8_lossy(&buf).to_string()
+            } else {
+                String::new()
+            };
             ExecHostRunResult {
-                exit_code: code,
+                exit_code: status.code(),
                 timed_out: false,
-                success: output.status.success(),
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                success: status.success(),
+                stdout,
+                stderr,
                 error: None,
             }
         }
-        Ok(Err(e)) => ExecHostRunResult {
-            exit_code: None,
-            timed_out: false,
-            success: false,
-            stdout: String::new(),
-            stderr: String::new(),
-            error: Some(format!("wait error: {}", e)),
-        },
-        Err(_) => ExecHostRunResult {
-            exit_code: None,
-            timed_out: true,
-            success: false,
-            stdout: String::new(),
-            stderr: String::new(),
-            error: Some("command timed out".to_string()),
-        },
+        Ok(Err(e)) => {
+            // wait() failed — kill defensively
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            ExecHostRunResult {
+                exit_code: None,
+                timed_out: false,
+                success: false,
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some(format!("wait error: {}", e)),
+            }
+        }
+        Err(_) => {
+            // Timeout — explicitly kill the process so it doesn't run forever
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            ExecHostRunResult {
+                exit_code: None,
+                timed_out: true,
+                success: false,
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some("command timed out".to_string()),
+            }
+        }
     }
 }
 
@@ -815,7 +1869,7 @@ async fn process_socket_line(line: &str, app: &AppHandle, token: &str) -> String
     // Try parsing as approval request envelope
     if let Ok(envelope) = serde_json::from_str::<ApprovalRequestEnvelope>(line) {
         if envelope.msg_type == "request" {
-            return handle_approval_request(envelope, app).await;
+            return handle_approval_request(envelope, app, token).await;
         }
     }
 
@@ -910,9 +1964,17 @@ async fn handle_exec_message(envelope: ExecEnvelope, app: &AppHandle, token: &st
         let state = app.state::<AppState>();
         if let Ok(mut approvals) = state.pending_approvals.lock() {
             approvals.push(pending);
-        }
+        };
     }
     let _ = app.emit("approval-pending", &preview);
+
+    // Surface the window so the user sees the approval prompt
+    if let Some(window) = app.get_webview_window("main") {
+        if !window.is_visible().unwrap_or(true) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
 
     // Wait for decision with timeout
     let timeout_duration = std::time::Duration::from_millis(APPROVAL_TIMEOUT_MS);
@@ -926,7 +1988,7 @@ async fn handle_exec_message(envelope: ExecEnvelope, app: &AppHandle, token: &st
         let state = app.state::<AppState>();
         if let Ok(mut approvals) = state.pending_approvals.lock() {
             approvals.retain(|a| a.id != approval_id);
-        }
+        };
     }
 
     // Emit resolved event
@@ -953,7 +2015,16 @@ async fn handle_exec_message(envelope: ExecEnvelope, app: &AppHandle, token: &st
     make_success_response(result)
 }
 
-async fn handle_approval_request(envelope: ApprovalRequestEnvelope, app: &AppHandle) -> String {
+async fn handle_approval_request(
+    envelope: ApprovalRequestEnvelope,
+    app: &AppHandle,
+    token: &str,
+) -> String {
+    // Validate the shared token to prevent unauthorized approval injection
+    if envelope.token.as_deref() != Some(token) {
+        return make_error_response("auth-failed", "invalid token");
+    }
+
     let req_id = envelope.id.unwrap_or_else(uuid_v4);
     let request = envelope.request.unwrap_or(serde_json::Value::Null);
 
@@ -1018,9 +2089,17 @@ async fn handle_approval_request(envelope: ApprovalRequestEnvelope, app: &AppHan
         let state = app.state::<AppState>();
         if let Ok(mut approvals) = state.pending_approvals.lock() {
             approvals.push(pending);
-        }
+        };
     }
     let _ = app.emit("approval-pending", &preview);
+
+    // Surface the window so the user sees the approval prompt
+    if let Some(window) = app.get_webview_window("main") {
+        if !window.is_visible().unwrap_or(true) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
 
     let timeout_duration = std::time::Duration::from_millis(APPROVAL_TIMEOUT_MS);
     let decision = match rx.recv_timeout(timeout_duration) {
@@ -1032,7 +2111,7 @@ async fn handle_approval_request(envelope: ApprovalRequestEnvelope, app: &AppHan
         let state = app.state::<AppState>();
         if let Ok(mut approvals) = state.pending_approvals.lock() {
             approvals.retain(|a| a.id != req_id);
-        }
+        };
     }
 
     let _ = app.emit(
@@ -1283,6 +2362,36 @@ fn is_autostart_enabled(app: AppHandle) -> Result<bool, String> {
         .map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+fn get_install_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let config = state.config.lock().map_err(|err| err.to_string())?;
+    Ok(config.install_path.clone())
+}
+
+#[tauri::command]
+fn set_install_path(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+    let mut config = state.config.lock().map_err(|err| err.to_string())?;
+    config.install_path = path;
+    save_config(&config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn import_openclaw_config() -> Option<NodeClientConfig> {
+    try_import_from_openclaw_config()
+}
+
+#[tauri::command]
+fn detect_install_path(state: State<'_, AppState>) -> Result<Option<DiscoveryResult>, String> {
+    let result = discover_openclaw_binary();
+    if let Some(ref discovery) = result {
+        let mut config = state.config.lock().map_err(|err| err.to_string())?;
+        config.install_path = Some(discovery.bin_dir.clone());
+        save_config(&config)?;
+    }
+    Ok(result)
+}
+
 // ---------------------------------------------------------------------------
 // Tray
 // ---------------------------------------------------------------------------
@@ -1367,10 +2476,33 @@ fn setup_tray(app: &tauri::App) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Disable WebKit DMABUF renderer before any GTK/WebKit initialization.
+    // The bundled `strip` in older linuxdeploy AppImages cannot handle modern
+    // ELF .relr.dyn sections (Arch Linux), and some Wayland compositors have
+    // broken DMA-BUF fencing. Setting this here propagates to all WebKit
+    // subprocesses via environment inheritance.
+    // Safety: called at program start, before any threads are spawned.
+    unsafe {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
+    // Recover config files whose ACLs were corrupted by a previous version's
+    // broken icacls invocation (stripped all ACEs, then failed the grant).
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(p) = config_path() {
+            try_recover_file_acls(&p);
+        }
+        if let Ok(p) = exec_approvals_path() {
+            try_recover_file_acls(&p);
+        }
+    }
+
     let config = load_config();
     let approval_token = generate_token();
 
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -1379,9 +2511,9 @@ fn main() {
         .manage(AppState {
             config: Mutex::new(config.clone()),
             runtime: Mutex::new(RuntimeState::default()),
-            approval_token: Mutex::new(approval_token.clone()),
             pending_approvals: Mutex::new(Vec::new()),
         })
+        .manage(Arc::new(gateway::GatewayState::new()))
         .invoke_handler(tauri::generate_handler![
             get_config,
             set_config,
@@ -1393,7 +2525,20 @@ fn main() {
             decide_approval,
             enable_autostart,
             disable_autostart,
-            is_autostart_enabled
+            is_autostart_enabled,
+            get_install_path,
+            set_install_path,
+            import_openclaw_config,
+            detect_install_path,
+            get_exec_policy,
+            set_exec_policy,
+            get_exec_allowlist,
+            add_allowlist_entry,
+            remove_allowlist_entry,
+            gateway::gateway_connect,
+            gateway::gateway_disconnect,
+            gateway::gateway_status,
+            gateway::gateway_rpc
         ])
         .setup(move |app| {
             setup_tray(app)?;
@@ -1434,10 +2579,48 @@ fn main() {
                 }
             }
 
+            // Auto-connect to gateway WebSocket
+            {
+                let gw_state: Arc<gateway::GatewayState> = Arc::clone(&app.state::<Arc<gateway::GatewayState>>());
+                let gw_app = app.handle().clone();
+                let gw_host = config.host.clone();
+                let gw_port = config.port;
+                let gw_tls = config.tls;
+                let gw_token = config.gateway_token.clone();
+                let gw_password = config.gateway_password.clone();
+                let gw_node_id = config.node_id.clone();
+                let gw_display_name = config.display_name.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Short delay to let the node process start first
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                    gateway::run_gateway_connection(
+                        gw_app,
+                        gw_state,
+                        format!("{}://{}:{}", if gw_tls { "wss" } else { "ws" }, gw_host, gw_port),
+                        gw_token,
+                        gw_password,
+                        gw_node_id,
+                        gw_display_name,
+                    ).await;
+                });
+            }
+
             Ok(())
         });
 
-    builder
-        .run(tauri::generate_context!())
-        .expect("error while running OpenClaw Windows Node Client");
+    let app = builder
+        .build(tauri::generate_context!())
+        .expect("error while building OpenClaw Node Client");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            // Safety-net cleanup: ensure child process and socket registration
+            // are cleaned up regardless of how the app exits (WM force-close,
+            // SIGTERM, runtime panic, etc.). Both functions are idempotent.
+            let _ = stop_node_internal(app_handle);
+            if let Ok(path) = exec_approvals_path() {
+                let _ = clear_exec_approvals_socket(&path);
+            }
+        }
+    });
 }

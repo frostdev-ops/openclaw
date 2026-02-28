@@ -45,6 +45,7 @@ export function registerNodeCli(program: Command) {
     .option("--tls-fingerprint <sha256>", "Expected TLS certificate fingerprint (sha256)")
     .option("--node-id <id>", "Override node id (clears pairing token)")
     .option("--display-name <name>", "Override node display name")
+    .option("--password <password>", "Gateway password")
     .action(async (opts) => {
       const existing = await loadNodeHostConfig();
       const host =
@@ -57,6 +58,7 @@ export function registerNodeCli(program: Command) {
         gatewayTlsFingerprint: opts.tlsFingerprint,
         nodeId: opts.nodeId,
         displayName: opts.displayName,
+        password: opts.password,
       });
     });
 

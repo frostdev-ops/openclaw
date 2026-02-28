@@ -31,6 +31,7 @@ type NodeHostRunOptions = {
   gatewayTlsFingerprint?: string;
   nodeId?: string;
   displayName?: string;
+  password?: string;
 };
 
 const DEFAULT_NODE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -169,6 +170,7 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     process.env.OPENCLAW_GATEWAY_TOKEN?.trim() ||
     (isRemoteMode ? cfg.gateway?.remote?.token : cfg.gateway?.auth?.token);
   const password =
+    opts.password?.trim() ||
     process.env.OPENCLAW_GATEWAY_PASSWORD?.trim() ||
     (isRemoteMode ? cfg.gateway?.remote?.password : cfg.gateway?.auth?.password);
 
@@ -211,6 +213,10 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
         return;
       }
       void handleInvoke(payload, client, skillBins);
+    },
+    onHelloOk: () => {
+      // eslint-disable-next-line no-console
+      console.log("node host connected to gateway");
     },
     onConnectError: (err) => {
       // keep retrying (handled by GatewayClient)

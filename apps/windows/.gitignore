@@ -1,2 +1,12 @@
 node_modules/
+dist/
 src-tauri/target/
+src-tauri/gen/
+# Bundled CLI resources (staged by build.py --bundle-cli)
+# Ignore all staged CLI content but keep the .keep placeholder
+src-tauri/resources/openclaw/*
+!src-tauri/resources/openclaw/.keep
+release/
+# Node.js binaries bundled for Windows/Linux — too large for git
+src-tauri/resources/node.exe
+src-tauri/resources/node

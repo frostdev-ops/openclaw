@@ -1,33 +1,50 @@
-# OpenClaw Windows Node Client (Tauri v2)
+# OpenClaw Node Client
 
-Windows tray app that replaces headless `openclaw node` service management.
+A Tauri v2 desktop application that manages the OpenClaw node process with a modern React UI. Supports **Windows** (NSIS installer) and **Linux** (AppImage).
 
-## Current Scope
-
-- Tauri v2 desktop app scaffold under `apps/windows/`
-- System tray controls: start, stop, restart, show, quit
-- Manages `openclaw node run` process lifecycle
-- Persists gateway/node config to `~/.openclaw/windows-node-client.json`
-- Auto-starts node host when app launches (configurable)
-- Streams process logs into the app UI
-
-## Planned Next Scope
-
-- Native exec approval prompt flow wired to node-host approval requests
-- Rich connection telemetry (paired, connected, reconnecting states)
-- Approval history and policy editing UI parity with macOS app
-
-## Run
+## Development
 
 ```bash
+# Install dependencies
 cd apps/windows
-pnpm install
+pnpm install --ignore-workspace
+
+# Start dev server (Vite + Tauri hot-reload)
 pnpm tauri:dev
+
+# Build for production
+pnpm tauri:build
+# Windows output: src-tauri/target/release/bundle/nsis/*.exe
+# Linux output:   src-tauri/target/release/bundle/appimage/*.AppImage
+
+# Type check
+pnpm typecheck
+
+# Rust check
+pnpm check:rust
 ```
 
-## Build
+## Linux Runtime Dependencies (for development builds)
 
 ```bash
-cd apps/windows
-pnpm tauri:build
+# Debian/Ubuntu
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+
+# Arch Linux
+sudo pacman -S webkit2gtk-4.1 libayatana-appindicator
 ```
+
+## Architecture
+
+- **Frontend**: React 19 + Vite 6 + TypeScript + Framer Motion
+- **Backend**: Tauri v2 (Rust)
+- **Source**: `src/` (React app), `src-tauri/` (Rust backend)
+- **Output**: `dist/` (built frontend, served by Tauri)
+
+## Features
+
+- Dashboard: node status, uptime, gateway URL
+- Approvals: exec-host command approval queue with countdown timers
+- Logs: color-coded terminal log viewer
+- Config: gateway connection settings
+- Settings: autostart, exec-host, install location picker

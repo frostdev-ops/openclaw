@@ -140,6 +140,11 @@
       - any-glob-to-any-file:
           - "apps/windows/**"
 
+"platform/desktop":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "apps/windows/**"
+
 "gateway":
   - changed-files:
       - any-glob-to-any-file:
