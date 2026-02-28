@@ -116,7 +116,7 @@ pub async fn run_gateway_connection(
     url: String,
     token: Option<String>,
     password: Option<String>,
-    node_id: Option<String>,
+    _node_id: Option<String>,
     display_name: Option<String>,
 ) {
     let (rpc_tx, mut rpc_rx) = mpsc::unbounded_channel::<RpcRequest>();
@@ -166,7 +166,7 @@ pub async fn run_gateway_connection(
 
     // Send connect handshake
     let connect_id = state.next_id();
-    let client_id = node_id.as_deref().unwrap_or("openclaw-control-ui");
+    let client_id = "openclaw-control-surface";
 
     // Build auth object conditionally — the schema's Type.Optional(Type.Object(...)) only
     // accepts an auth object or absent field; null is not valid, so omit auth entirely when
