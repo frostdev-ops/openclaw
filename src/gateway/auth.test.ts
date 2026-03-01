@@ -334,6 +334,36 @@ describe("gateway auth", () => {
     expect(limiter.recordFailure).toHaveBeenCalledWith("203.0.113.77", "shared-secret");
   });
 
+  it("treats Tailscale CGNAT IP as local direct request", async () => {
+    const res = await authorizeGatewayConnect({
+      auth: { mode: "token", token: "secret", allowTailscale: false },
+      connectAuth: { token: "secret" },
+      req: {
+        socket: { remoteAddress: "100.114.194.75" },
+        headers: { host: "100.114.194.75:18789" },
+      } as never,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.method).toBe("token");
+  });
+
+  it("rejects spoofed x-forwarded-for from Tailscale IP without trusted proxy", async () => {
+    const res = await authorizeGatewayConnect({
+      auth: { mode: "token", token: "secret", allowTailscale: false },
+      connectAuth: { token: "secret" },
+      req: {
+        socket: { remoteAddress: "100.114.194.75" },
+        headers: {
+          host: "100.114.194.75:18789",
+          "x-forwarded-for": "203.0.113.10",
+        },
+      } as never,
+    });
+    // Has forwarded headers but remoteAddress is not a trusted proxy → not local-direct
+    expect(res.ok).toBe(true);
+    expect(res.method).toBe("token");
+  });
+
   it("passes custom rate-limit scope to limiter operations", async () => {
     const limiter = createLimiterSpy();
     const res = await authorizeGatewayConnect({

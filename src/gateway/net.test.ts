@@ -4,6 +4,7 @@ import {
   isLocalishHost,
   isPrivateOrLoopbackAddress,
   isSecureWebSocketUrl,
+  isTailnetAddress,
   isTrustedProxyAddress,
   pickPrimaryLanIPv4,
   resolveClientIp,
@@ -33,6 +34,8 @@ describe("isLocalishHost", () => {
       "[::1]:18789",
       "[::ffff:127.0.0.1]:18789",
       "gateway.tailnet.ts.net",
+      "100.114.194.75:18789",
+      "100.64.0.1",
     ];
     for (const host of accepted) {
       expect(isLocalishHost(host), host).toBe(true);
@@ -44,6 +47,21 @@ describe("isLocalishHost", () => {
     for (const host of rejected) {
       expect(isLocalishHost(host), host).toBe(false);
     }
+  });
+});
+
+describe("isTailnetAddress", () => {
+  it("accepts IPs in the Tailscale CGNAT range (100.64.0.0/10)", () => {
+    expect(isTailnetAddress("100.64.0.1")).toBe(true);
+    expect(isTailnetAddress("100.114.194.75")).toBe(true);
+    expect(isTailnetAddress("100.127.255.255")).toBe(true);
+  });
+
+  it("rejects IPs outside the Tailscale CGNAT range", () => {
+    expect(isTailnetAddress("100.128.0.1")).toBe(false);
+    expect(isTailnetAddress("192.168.1.1")).toBe(false);
+    expect(isTailnetAddress("10.0.0.1")).toBe(false);
+    expect(isTailnetAddress(undefined)).toBe(false);
   });
 });
 

@@ -15,6 +15,7 @@ import { resolveGatewayCredentialsFromValues } from "./credentials.js";
 import {
   isLocalishHost,
   isLoopbackAddress,
+  isTailnetAddress,
   isTrustedProxyAddress,
   resolveClientIp,
 } from "./net.js";
@@ -130,7 +131,7 @@ export function isLocalDirectRequest(
     return false;
   }
   const clientIp = resolveRequestClientIp(req, trustedProxies, allowRealIpFallback) ?? "";
-  if (!isLoopbackAddress(clientIp)) {
+  if (!isLoopbackAddress(clientIp) && !isTailnetAddress(clientIp)) {
     return false;
   }
 

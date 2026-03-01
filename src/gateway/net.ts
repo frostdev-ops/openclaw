@@ -67,6 +67,20 @@ export function isPrivateOrLoopbackAddress(ip: string | undefined): boolean {
   return isPrivateOrLoopbackIpAddress(ip);
 }
 
+const TAILNET_IPV4_CIDR = "100.64.0.0/10";
+
+/**
+ * Returns true if the IP is in the Tailscale CGNAT range (100.64.0.0/10).
+ * https://tailscale.com/kb/1015/100.x-addresses
+ */
+export function isTailnetAddress(ip: string | undefined): boolean {
+  const normalized = normalizeIp(ip);
+  if (!normalized) {
+    return false;
+  }
+  return isIpInCidr(normalized, TAILNET_IPV4_CIDR);
+}
+
 function normalizeIp(ip: string | undefined): string | undefined {
   return normalizeIpAddress(ip);
 }
@@ -344,7 +358,7 @@ export function isLocalishHost(hostHeader?: string): boolean {
   if (!host) {
     return false;
   }
-  return isLoopbackHost(host) || host.endsWith(".ts.net");
+  return isLoopbackHost(host) || host.endsWith(".ts.net") || isTailnetAddress(host);
 }
 
 /**
