@@ -179,11 +179,24 @@ def bundle_cli(platform: str) -> None:
                 p.unlink()
                 removed += 1
 
+    # Remove build-tmp directories (native addon build artifacts with absurdly
+    # long paths that exceed Windows MAX_PATH and are never needed at runtime).
+    for build_tmp in list(nm.rglob("build-tmp*")):
+        if build_tmp.is_dir():
+            shutil.rmtree(build_tmp)
+            removed += 1
+
+    # Remove .deps directories (gyp/cmake build leftovers with host paths baked in)
+    for deps_dir in list(nm.rglob(".deps")):
+        if deps_dir.is_dir():
+            shutil.rmtree(deps_dir)
+            removed += 1
+
     # Prune empty directories
     for d in sorted(nm.rglob("*"), reverse=True):
         if d.is_dir() and not any(d.iterdir()):
             d.rmdir()
-    print(f"  Removed {removed} non-target files")
+    print(f"  Removed {removed} non-target files/dirs")
 
     (openclaw_dest / ".keep").touch()
     print("\nBundle-cli step complete.")
@@ -198,6 +211,20 @@ def build_linux(bundles: list[str]) -> None:
         env=env,
         cwd=SCRIPT_DIR,
     )
+
+
+def clean_stale_resources() -> None:
+    """Remove leftover node_modules from resources/openclaw if present.
+
+    When building without --bundle-cli after a previous --bundle-cli run,
+    stale Linux native modules can end up in the Windows installer and break
+    it (path-too-long, wrong platform binaries, etc.).
+    """
+    nm = RESOURCES_DIR / "openclaw" / "node_modules"
+    if nm.is_dir():
+        print(f"\nCleaning stale resources at {nm} ...")
+        shutil.rmtree(nm)
+        print("  Removed stale node_modules")
 
 
 def build_windows() -> None:
@@ -238,6 +265,8 @@ def main() -> None:
             sys.exit(1)
         if bundle_cli_flag:
             bundle_cli("windows")
+        else:
+            clean_stale_resources()
         build_windows()
         print_artifacts(WINDOWS_BUNDLE_SUFFIX)
     else:
@@ -248,6 +277,8 @@ def main() -> None:
             sys.exit(1)
         if bundle_cli_flag:
             bundle_cli("linux")
+        else:
+            clean_stale_resources()
         build_linux(args)
         print_artifacts(LINUX_BUNDLE_SUFFIX)
 
