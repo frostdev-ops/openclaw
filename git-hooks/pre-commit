@@ -43,7 +43,9 @@ if [ "${#lint_files[@]}" -gt 0 ]; then
 fi
 
 if [ "${#format_files[@]}" -gt 0 ]; then
-  "$RUN_NODE_TOOL" oxfmt --write -- "${format_files[@]}"
+  # oxfmt does not support the -- end-of-options separator; file names are
+  # already sanitised by filter-staged-files.mjs so this is safe.
+  "$RUN_NODE_TOOL" oxfmt --write "${format_files[@]}"
 fi
 
 git add -- "${files[@]}"
