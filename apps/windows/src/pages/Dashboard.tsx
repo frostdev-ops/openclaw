@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";

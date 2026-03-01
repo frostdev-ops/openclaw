@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { Card } from "../components/ui/Card";
 import { Select } from "../components/ui/Select";
 import { Input } from "../components/ui/Input";

@@ -2392,6 +2392,14 @@ fn detect_install_path(state: State<'_, AppState>) -> Result<Option<DiscoveryRes
     Ok(result)
 }
 
+#[tauri::command]
+fn get_device_id(app: AppHandle) -> Result<String, String> {
+    let data_dir = app.path().app_data_dir()
+        .map_err(|e| format!("failed to get data dir: {}", e))?;
+    let identity = gateway::load_or_create_device_identity(&data_dir)?;
+    Ok(identity.device_id)
+}
+
 // ---------------------------------------------------------------------------
 // Tray
 // ---------------------------------------------------------------------------
@@ -2538,7 +2546,8 @@ fn main() {
             gateway::gateway_connect,
             gateway::gateway_disconnect,
             gateway::gateway_status,
-            gateway::gateway_rpc
+            gateway::gateway_rpc,
+            get_device_id
         ])
         .setup(move |app| {
             setup_tray(app)?;
@@ -2590,6 +2599,8 @@ fn main() {
                 let gw_password = config.gateway_password.clone();
                 let gw_node_id = config.node_id.clone();
                 let gw_display_name = config.display_name.clone();
+                let gw_data_dir = app.path().app_data_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
                 tauri::async_runtime::spawn(async move {
                     // Short delay to let the node process start first
                     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
@@ -2601,6 +2612,7 @@ fn main() {
                         gw_password,
                         gw_node_id,
                         gw_display_name,
+                        gw_data_dir,
                     ).await;
                 });
             }

@@ -1,7 +1,8 @@
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import type { PageId } from "../../types";
 import type { NodeStatusString } from "../../tauri/types";
+import type { GatewayStatus } from "../../gateway/types";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { BottomBar } from "./BottomBar";
@@ -11,11 +12,12 @@ interface ShellProps {
   onNavigate: (page: PageId) => void;
   status: NodeStatusString;
   approvalCount: number;
-  gatewayConnected?: boolean;
+  gwStatus: GatewayStatus;
+  onRetryConnect?: () => void;
   children: ReactNode;
 }
 
-export function Shell({ activePage, onNavigate, status, approvalCount, gatewayConnected, children }: ShellProps) {
+export function Shell({ activePage, onNavigate, status, approvalCount, gwStatus, onRetryConnect, children }: ShellProps) {
   return (
     <div className="shell">
       <Sidebar
@@ -28,7 +30,8 @@ export function Shell({ activePage, onNavigate, status, approvalCount, gatewayCo
         <TopBar
           activePage={activePage}
           status={status}
-          gatewayConnected={gatewayConnected ?? false}
+          gwStatus={gwStatus}
+          onRetryConnect={onRetryConnect}
         />
 
         <div className="content-wrap">

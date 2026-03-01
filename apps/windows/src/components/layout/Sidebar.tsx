@@ -23,6 +23,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "CONTROL",
     items: [
+      { id: "chat", label: "Chat", icon: "messageSquare" },
       { id: "overview", label: "Overview", icon: "activity" },
       { id: "channels", label: "Channels", icon: "radio" },
       { id: "instances", label: "Instances", icon: "layers" },

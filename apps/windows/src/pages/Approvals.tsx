@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import { Button } from "../components/ui/Button";
 import type { ApprovalPreview, ApprovalDecision } from "../tauri/types";
 import { getPendingApprovals, decideApproval, gatewayRpc } from "../tauri/commands";

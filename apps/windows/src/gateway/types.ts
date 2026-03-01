@@ -32,23 +32,32 @@ export interface HealthSnapshot {
   updatedAtMs?: number;
 }
 
-export interface ChannelAccountStatus {
+export interface ChannelAccountSnapshot {
   accountId?: string;
-  linked?: boolean;
-  running?: boolean;
   connected?: boolean;
+  running?: boolean;
+  reconnectAttempts?: number;
+  lastConnectedAt?: number;
+  lastError?: string;
+  dmPolicy?: string;
+  mode?: string;
+  linked?: boolean;
   error?: string;
 }
 
 export interface ChannelStatus {
   channelId: string;
   configured?: boolean;
-  accounts?: ChannelAccountStatus[];
+  accounts?: ChannelAccountSnapshot[];
   error?: string;
 }
 
 export interface ChannelsStatusSnapshot {
   channels: ChannelStatus[];
+  channelOrder?: string[];
+  channelLabels?: Record<string, string>;
+  channelAccounts?: Record<string, ChannelAccountSnapshot[]>;
+  channelMeta?: Record<string, unknown>;
 }
 
 export interface GatewaySessionRow {
@@ -60,12 +69,40 @@ export interface GatewaySessionRow {
   inputTokens?: number;
   outputTokens?: number;
   updatedAtMs?: number;
+  displayName?: string;
+  derivedTitle?: string;
+  thinkingLevel?: string;
+  verboseLevel?: string;
+  reasoningLevel?: string;
+  elevatedLevel?: string;
+  totalTokens?: number;
+  updatedAt?: string;
+  lastChannel?: string;
+  modelProvider?: string;
+}
+
+export interface StatusSummary {
+  sessions: number;
+  activeSessions: number;
+  channels: number;
+  connectedChannels: number;
+  agents: number;
+  skills: number;
+  cronJobs: number;
+  uptime?: number;
+  version?: string;
+}
+
+export interface CronScheduleInterval {
+  kind: string;
+  everyMs?: number;
+  anchorMs?: number;
 }
 
 export interface CronJob {
   id: string;
   name?: string;
-  schedule?: string;
+  schedule?: string | CronScheduleInterval;
   enabled?: boolean;
   nextRunAtMs?: number;
   lastRunAtMs?: number;
@@ -79,6 +116,21 @@ export interface CronRun {
   startedAtMs: number;
   finishedAtMs?: number;
   status?: string;
+  error?: string;
+}
+
+export interface CronStatus {
+  jobs: number;
+  enabled: boolean;
+  nextWakeAtMs?: number;
+}
+
+export interface CronRunLogEntry {
+  ts: number;
+  jobId: string;
+  jobName?: string;
+  status: string;
+  durationMs?: number;
   error?: string;
 }
 
@@ -97,7 +149,16 @@ export interface SkillStatusEntry {
   eligible?: boolean;
   enabled?: boolean;
   blocked?: boolean;
-  missingDeps?: string[];
+  missingDeps?: Array<string | { dep: string; installOptions?: string[] }>;
+  emoji?: string;
+  description?: string;
+  bundled?: boolean;
+  requirements?: {
+    bins?: string[];
+    env?: string[];
+    config?: string[];
+    os?: string[];
+  };
 }
 
 export interface NodeEntry {
@@ -123,6 +184,49 @@ export interface UsageStats {
   estimatedCostUsd?: number;
 }
 
+export interface SessionsUsageResult {
+  sessions: GatewaySessionRow[];
+  aggregates: SessionsUsageAggregates;
+  cost?: CostUsageSummary;
+}
+
+export interface CostUsageSummary {
+  totalCostUsd: number;
+  byModel: Record<string, number>;
+  byChannel: Record<string, number>;
+}
+
+export interface SessionsUsageAggregates {
+  totalSessions: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTokens: number;
+  totalCostUsd: number;
+}
+
+export interface AgentFile {
+  path: string;
+  content?: string;
+}
+
+export interface AgentFilesListResult {
+  files: AgentFile[];
+}
+
+export interface ChatMessage {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: number;
+  toolCalls?: Array<{ name: string; args?: unknown; result?: unknown }>;
+  images?: string[];
+}
+
+export interface ChatHistoryResult {
+  messages: ChatMessage[];
+  sessionKey: string;
+}
+
 // Hello-ok payload from the gateway connection handshake
 export interface HelloOk {
   type: "hello-ok";
@@ -145,10 +249,16 @@ export interface HelloOk {
     maxBufferedBytes: number;
     tickIntervalMs: number;
   };
+  auth?: {
+    role: string;
+    scopes: string[];
+    deviceToken?: string;
+    issuedAtMs?: number;
+  };
 }
 
 // Status of the gateway connection
-export type GatewayConnectionState = "disconnected" | "connecting" | "connected" | "error";
+export type GatewayConnectionState = "disconnected" | "connecting" | "connected" | "error" | "pairing";
 
 export type GatewayConnectionStatus = GatewayStatus;
 
@@ -159,6 +269,8 @@ export interface GatewayStatus {
   serverVersion?: string;
   error?: string;
   connectedAtMs?: number;
+  pairingRequestId?: string;
+  deviceId?: string;
 }
 
 // RPC result from gateway_rpc Tauri command

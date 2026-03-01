@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { isWindows } from "../utils/platform";
 import { open } from "@tauri-apps/plugin-dialog";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import { Card } from "../components/ui/Card";
 import { Checkbox } from "../components/ui/Checkbox";
 import { Button } from "../components/ui/Button";

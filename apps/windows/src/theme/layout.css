@@ -6,17 +6,17 @@
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background: var(--bg-primary);
 }
 
 /* Sidebar nav */
 .nav {
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary);
   border-right: 1px solid var(--border);
   overflow-y: auto;
   overflow-x: hidden;
+  background: rgba(10, 10, 20, 0.7);
+  backdrop-filter: blur(16px);
 }
 .nav-brand {
   padding: 14px 16px 12px;
@@ -110,7 +110,8 @@
   padding: 0 20px;
   height: 48px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-secondary);
+  background: rgba(10, 10, 20, 0.5);
+  backdrop-filter: blur(12px);
   flex-shrink: 0;
 }
 .topbar-brand-name {
@@ -179,7 +180,8 @@
   gap: 12px;
   padding: 0 14px;
   border-top: 1px solid var(--border);
-  background: var(--bg-secondary);
+  background: rgba(10, 10, 20, 0.5);
+  backdrop-filter: blur(12px);
   font-size: 11px;
   color: var(--text-muted);
   flex-shrink: 0;

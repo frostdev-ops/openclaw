@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import type { NodeStatusString } from "../../tauri/types";
 
 const STATUS_COLORS: Record<NodeStatusString, string> = {

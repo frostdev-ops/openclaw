@@ -139,3 +139,7 @@ export async function gatewayRpc<T = unknown>(
 ): Promise<GatewayRpcResult<T>> {
   return invoke<GatewayRpcResult<T>>("gateway_rpc", { method, params: params ?? null });
 }
+
+export async function getDeviceId(): Promise<string> {
+  return invoke<string>("get_device_id");
+}

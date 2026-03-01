@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Shell } from "./components/layout/Shell";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Overview } from "./pages/Overview";
 import { Channels } from "./pages/Channels";
 import { Sessions } from "./pages/Sessions";
@@ -13,17 +14,46 @@ import { Approvals } from "./pages/Approvals";
 import { Logs } from "./pages/Logs";
 import { Config } from "./pages/Config";
 import { Security } from "./pages/Security";
+import { Chat } from "./pages/Chat";
+import { SessionReplay } from "./pages/SessionReplay";
 import { GatewayProvider, useGateway } from "./gateway/context";
-import type { PageId } from "./types";
+import { subscribeGatewayEvents } from "./stores/connection";
+import type { PageId, PageState } from "./types";
 import type { NodeStatusString } from "./tauri/types";
-import { getStatus } from "./tauri/commands";
+import { getConfig, getStatus, gatewayConnect } from "./tauri/commands";
 import { onNodeStatusChanged } from "./tauri/events";
+
+// Initialize gateway event subscriptions for Zustand stores
+subscribeGatewayEvents();
 
 function AppContent() {
   const [activePage, setActivePage] = useState<PageId>("overview");
+  const [pageState, setPageState] = useState<PageState>({});
   const [status, setStatus] = useState<NodeStatusString>("stopped");
   const [approvalCount, setApprovalCount] = useState(0);
   const { status: gwStatus } = useGateway();
+
+  const onNavigate = useCallback((page: PageId, state?: PageState) => {
+    setActivePage(page);
+    setPageState(state ?? {});
+  }, []);
+
+  const handleRetryConnect = useCallback(async () => {
+    try {
+      const cfg = await getConfig();
+      await gatewayConnect({
+        host: cfg.host,
+        port: cfg.port,
+        tls: cfg.tls,
+        token: cfg.gatewayToken,
+        password: cfg.gatewayPassword,
+        nodeId: cfg.nodeId,
+        displayName: cfg.displayName,
+      });
+    } catch {
+      // retry failed silently — status poll will update UI
+    }
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -52,7 +82,7 @@ function AppContent() {
           <Overview
             status={status}
             onStatusChange={setStatus}
-            onNavigateToLogs={() => setActivePage("logs")}
+            onNavigateToLogs={() => onNavigate("logs")}
           />
         );
       case "approvals":
@@ -65,8 +95,18 @@ function AppContent() {
         return <Security />;
       case "channels":
         return <Channels />;
+      case "chat":
+        return <Chat onNavigate={onNavigate} />;
       case "sessions":
-        return <Sessions />;
+        if (pageState.sessionKey) {
+          return (
+            <SessionReplay
+              sessionKey={pageState.sessionKey}
+              onBack={() => onNavigate("sessions", {})}
+            />
+          );
+        }
+        return <Sessions onNavigate={onNavigate} pageState={pageState} />;
       case "usage":
         return <Usage />;
       case "agents":
@@ -79,18 +119,23 @@ function AppContent() {
         return <Cron />;
       case "nodes":
         return <Nodes />;
+      default:
+        return null;
     }
   };
 
   return (
     <Shell
       activePage={activePage}
-      onNavigate={setActivePage}
+      onNavigate={onNavigate}
       status={status}
       approvalCount={approvalCount}
-      gatewayConnected={gwStatus.state === "connected"}
+      gwStatus={gwStatus}
+      onRetryConnect={handleRetryConnect}
     >
-      {renderPage()}
+      <ErrorBoundary key={activePage}>
+        {renderPage()}
+      </ErrorBoundary>
     </Shell>
   );
 }
