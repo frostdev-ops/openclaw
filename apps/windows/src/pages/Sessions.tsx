@@ -360,7 +360,7 @@ export function Sessions({ onNavigate, pageState: _pageState }: SessionsProps) {
     if (!data?.sessions) {
       return [];
     }
-    const sorted = [...data.sessions].toSorted((a, b) => {
+    const sorted = [...data.sessions].sort((a: GatewaySessionRow, b: GatewaySessionRow) => {
       const aTime = a.updatedAtMs ?? 0;
       const bTime = b.updatedAtMs ?? 0;
       return bTime - aTime;
@@ -369,7 +369,7 @@ export function Sessions({ onNavigate, pageState: _pageState }: SessionsProps) {
       return sorted;
     }
     const q = searchQuery.toLowerCase().trim();
-    return sorted.filter((s) => {
+    return sorted.filter((s: GatewaySessionRow) => {
       const label = s.label?.toLowerCase() ?? "";
       const key = s.key.toLowerCase();
       const displayName = s.displayName?.toLowerCase() ?? "";
@@ -522,7 +522,7 @@ export function Sessions({ onNavigate, pageState: _pageState }: SessionsProps) {
                 </tr>
               </thead>
               <tbody>
-                {sessions.map((session) => (
+                {sessions.map((session: GatewaySessionRow) => (
                   <SessionRow
                     key={session.key}
                     session={session}

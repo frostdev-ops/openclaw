@@ -346,7 +346,7 @@ function ModelBreakdown({
   byModel: Array<{ model: string; provider: string; count: number; cost: number; tokens: number; input: number; output: number }>;
 }) {
   const sorted = useMemo(
-    () => [...byModel].toSorted((a, b) => b.cost - a.cost),
+    () => [...byModel].sort((a: typeof byModel[number], b: typeof byModel[number]) => b.cost - a.cost),
     [byModel],
   );
 
@@ -408,7 +408,7 @@ function ModelBreakdown({
             </tr>
           </thead>
           <tbody>
-            {sorted.map((entry, i) => (
+            {sorted.map((entry: typeof sorted[number], i: number) => (
               <tr key={`${entry.provider}-${entry.model}-${i}`} className="border-b border-neutral-800/50 hover:bg-neutral-800/30 transition-colors">
                 <td className="px-4 py-2.5">
                   <span className="text-sm text-neutral-200 font-mono">{entry.model}</span>
@@ -441,7 +441,7 @@ function ModelBreakdown({
 
 function ChannelBreakdown({ byChannel }: { byChannel: Array<{ channel: string; cost: number; tokens: number }> }) {
   const sorted = useMemo(
-    () => [...byChannel].toSorted((a, b) => b.cost - a.cost),
+    () => [...byChannel].sort((a: typeof byChannel[number], b: typeof byChannel[number]) => b.cost - a.cost),
     [byChannel],
   );
 
@@ -453,7 +453,7 @@ function ChannelBreakdown({ byChannel }: { byChannel: Array<{ channel: string; c
     );
   }
 
-  const pieData = sorted.map((entry) => ({ name: entry.channel, value: entry.cost }));
+  const pieData = sorted.map((entry: typeof sorted[number]) => ({ name: entry.channel, value: entry.cost }));
 
   return (
     <Card accent>
@@ -467,7 +467,7 @@ function ChannelBreakdown({ byChannel }: { byChannel: Array<{ channel: string; c
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie data={pieData} cx="50%" cy="50%" innerRadius={50} outerRadius={90} paddingAngle={2} dataKey="value">
-                {pieData.map((_, index) => (
+                {pieData.map((_: typeof pieData[number], index: number) => (
                   <Cell key={`cell-${index}`} fill={PIE_PALETTE[index % PIE_PALETTE.length]} />
                 ))}
               </Pie>
@@ -477,7 +477,7 @@ function ChannelBreakdown({ byChannel }: { byChannel: Array<{ channel: string; c
         </div>
 
         <div className="space-y-2">
-          {sorted.map((entry, i) => {
+          {sorted.map((entry: typeof sorted[number], i: number) => {
             const color = PIE_PALETTE[i % PIE_PALETTE.length];
             return (
               <div key={entry.channel} className="flex items-center justify-between py-2 px-3 rounded-md bg-neutral-900/50 hover:bg-neutral-800/50 transition-colors">
@@ -500,7 +500,7 @@ function ChannelBreakdown({ byChannel }: { byChannel: Array<{ channel: string; c
 
 function ToolsList({ tools }: { tools: Array<{ name: string; count: number }> }) {
   const sorted = useMemo(
-    () => [...tools].toSorted((a, b) => b.count - a.count),
+    () => [...tools].sort((a: typeof tools[number], b: typeof tools[number]) => b.count - a.count),
     [tools],
   );
 
@@ -523,7 +523,7 @@ function ToolsList({ tools }: { tools: Array<{ name: string; count: number }> })
       </h2>
 
       <div className="space-y-2">
-        {sorted.map((tool) => {
+        {sorted.map((tool: typeof sorted[number]) => {
           const pct = maxCount > 0 ? (tool.count / maxCount) * 100 : 0;
           return (
             <div key={tool.name}>

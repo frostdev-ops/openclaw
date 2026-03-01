@@ -78,7 +78,7 @@ function collectScalars(
   }
 
   if (isRecord(value)) {
-    for (const key of Object.keys(value).toSorted()) {
+    for (const key of [...Object.keys(value)].sort()) {
       collectScalars(value[key], path === "root" ? key : `${path}.${key}`, depth + 1, out);
       if (out.length >= MAX_SCALARS) { break; }
     }
@@ -576,16 +576,16 @@ function HealthInsightsPanel({
   );
 
   const topMetrics = useMemo(
-    () => [...numericEntries].toSorted((a, b) => metricPriority(a.path) - metricPriority(b.path)).slice(0, 8),
+    () => [...numericEntries].sort((a: typeof numericEntries[number], b: typeof numericEntries[number]) => metricPriority(a.path) - metricPriority(b.path)).slice(0, 8),
     [numericEntries],
   );
 
   const grouped = useMemo(() => {
     if (!isRecord(statusData)) { return [] as Array<{ key: string; entries: ScalarEntry[]; pass: number; fail: number }>; }
 
-    return Object.keys(statusData)
-      .toSorted()
-      .map((key) => {
+    return [...Object.keys(statusData)]
+      .sort()
+      .map((key: string) => {
         const groupEntries = collectScalars(statusData[key], key);
         const filteredEntries = filterLower
           ? groupEntries.filter((entry) => {
@@ -599,8 +599,8 @@ function HealthInsightsPanel({
 
         return { key, entries: filteredEntries, pass, fail };
       })
-      .filter((group) => group.entries.length > 0)
-      .toSorted((a, b) => b.entries.length - a.entries.length);
+      .filter((group: { key: string; entries: ScalarEntry[]; pass: number; fail: number }) => group.entries.length > 0)
+      .sort((a: { entries: ScalarEntry[] }, b: { entries: ScalarEntry[] }) => b.entries.length - a.entries.length);
   }, [statusData, filterLower]);
 
   return (
@@ -664,7 +664,7 @@ function HealthInsightsPanel({
           {/* Top metrics */}
           {topMetrics.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {topMetrics.map((entry) => {
+              {topMetrics.map((entry: typeof topMetrics[number]) => {
                 const pct = metricPercent(entry.path, entry.value);
                 return (
                   <motion.div
@@ -698,7 +698,7 @@ function HealthInsightsPanel({
             <p className="text-sm text-neutral-500">No matching health fields.</p>
           ) : (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-              {grouped.map((group, idx) => (
+              {grouped.map((group: typeof grouped[number], idx: number) => (
                 <details key={group.key} open={idx === 0} className="rounded-lg border border-neutral-800 bg-neutral-900/30 overflow-hidden">
                   <summary className="cursor-pointer list-none px-3 py-2 flex items-center justify-between">
                     <span className="text-sm text-neutral-200">{humanizeKey(group.key)}</span>
@@ -709,7 +709,7 @@ function HealthInsightsPanel({
                     </div>
                   </summary>
                   <div className="border-t border-neutral-800/70 max-h-64 overflow-auto divide-y divide-neutral-800/60">
-                    {group.entries.map((entry) => {
+                    {group.entries.map((entry: ScalarEntry) => {
                       const localPath = shortPath(entry.path, group.key);
                       const isBool = typeof entry.value === "boolean";
                       return (
