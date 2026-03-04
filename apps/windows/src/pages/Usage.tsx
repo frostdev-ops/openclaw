@@ -106,78 +106,38 @@ interface UsageAggregates {
 }
 
 function deriveAggregates(data: SessionsUsageResult): UsageAggregates {
+  const totals = data.totals;
   const agg = data.aggregates;
-  const cost = data.cost;
 
-  const totalCost = agg?.totalCostUsd ?? cost?.totalCostUsd ?? 0;
-  const totalTokens = agg?.totalTokens ?? 0;
-  const totalInput = agg?.totalInputTokens ?? 0;
-  const totalOutput = agg?.totalOutputTokens ?? 0;
-
-  // Derive per-model breakdown from sessions
-  const modelMap = new Map<string, { count: number; cost: number; tokens: number; input: number; output: number; provider: string }>();
-  for (const s of data.sessions ?? []) {
-    const model = s.model ?? "unknown";
-    const existing = modelMap.get(model) ?? { count: 0, cost: 0, tokens: 0, input: 0, output: 0, provider: s.modelProvider ?? "unknown" };
-    existing.count += 1;
-    existing.tokens += s.totalTokens ?? 0;
-    existing.input += s.inputTokens ?? 0;
-    existing.output += s.outputTokens ?? 0;
-    modelMap.set(model, existing);
-  }
-
-  // Distribute cost by model via cost.byModel if available
-  if (cost?.byModel) {
-    for (const [model, modelCost] of Object.entries(cost.byModel)) {
-      const existing = modelMap.get(model);
-      if (existing) {
-        existing.cost = modelCost;
-      }
-    }
-  }
-
-  const byModel = [...modelMap.entries()].map(([model, v]) => ({
-    model,
-    provider: v.provider,
-    count: v.count,
-    cost: v.cost,
-    tokens: v.tokens,
-    input: v.input,
-    output: v.output,
+  const byModel = (agg?.byModel ?? []).map((m) => ({
+    model: m.model ?? "unknown",
+    provider: m.provider ?? "unknown",
+    count: m.count,
+    cost: m.totals.totalCost,
+    tokens: m.totals.totalTokens,
+    input: m.totals.input,
+    output: m.totals.output,
   }));
 
-  // Derive per-channel breakdown from sessions
-  const channelMap = new Map<string, { cost: number; tokens: number }>();
-  for (const s of data.sessions ?? []) {
-    const channel = s.lastChannel ?? s.surface ?? "unknown";
-    const existing = channelMap.get(channel) ?? { cost: 0, tokens: 0 };
-    existing.tokens += s.totalTokens ?? 0;
-    channelMap.set(channel, existing);
-  }
-
-  if (cost?.byChannel) {
-    for (const [channel, channelCost] of Object.entries(cost.byChannel)) {
-      const existing = channelMap.get(channel);
-      if (existing) {
-        existing.cost = channelCost;
-      }
-    }
-  }
-
-  const byChannel = [...channelMap.entries()].map(([channel, v]) => ({
-    channel,
-    cost: v.cost,
-    tokens: v.tokens,
+  const byChannel = (agg?.byChannel ?? []).map((ch) => ({
+    channel: ch.channel,
+    cost: ch.totals.totalCost,
+    tokens: ch.totals.totalTokens,
   }));
 
   return {
-    totals: { totalCost, totalTokens, totalInput, totalOutput },
-    messageTotal: data.sessions?.length ?? 0,
-    toolCalls: 0, // not directly available, but placeholder
-    daily: [],
+    totals: {
+      totalCost: totals?.totalCost ?? 0,
+      totalTokens: totals?.totalTokens ?? 0,
+      totalInput: totals?.input ?? 0,
+      totalOutput: totals?.output ?? 0,
+    },
+    messageTotal: agg?.messages?.total ?? data.sessions?.length ?? 0,
+    toolCalls: agg?.tools?.totalCalls ?? 0,
+    daily: agg?.daily ?? [],
     byModel,
     byChannel,
-    tools: [],
+    tools: agg?.tools?.tools ?? [],
   };
 }
 

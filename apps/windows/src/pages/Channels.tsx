@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { usePollingRpc } from "../hooks/usePollingRpc";
-import type { ChannelsStatusSnapshot, ChannelAccountSnapshot } from "../gateway/types";
+import type { ChannelsStatusSnapshot, ChannelStatus, ChannelAccountSnapshot } from "../gateway/types";
 import { Card } from "../components/common/Card";
 import { Badge } from "../components/common/Badge";
 import { StatusPill } from "../components/common/StatusPill";
@@ -261,16 +261,21 @@ export function Channels() {
     15_000,
   );
 
-  const stats = useMemo(() => {
-    if (!data?.channels) { return { totalChannels: 0, activeAccounts: 0, errorCount: 0 }; }
-
-    const allAccounts = data.channels.flatMap((ch) => ch.accounts ?? []);
-    return {
-      totalChannels: data.channels.length,
-      activeAccounts: allAccounts.filter((a) => a.connected).length,
-      errorCount: allAccounts.filter((a) => a.lastError || a.error).length,
-    };
+  const channelList = useMemo(() => {
+    if (!data?.channels) { return []; }
+    return Array.isArray(data.channels) ? data.channels : Object.values(data.channels) as ChannelStatus[];
   }, [data]);
+
+  const stats = useMemo(() => {
+    if (channelList.length === 0) { return { totalChannels: 0, activeAccounts: 0, errorCount: 0 }; }
+
+    const allAccounts = channelList.flatMap((ch: ChannelStatus) => ch.accounts ?? []);
+    return {
+      totalChannels: channelList.length,
+      activeAccounts: allAccounts.filter((a: ChannelAccountSnapshot) => a.connected).length,
+      errorCount: allAccounts.filter((a: ChannelAccountSnapshot) => a.lastError || a.error).length,
+    };
+  }, [channelList]);
 
   if (loading && !data) {
     return (
@@ -290,7 +295,7 @@ export function Channels() {
     );
   }
 
-  if (!data?.channels || data.channels.length === 0) {
+  if (!data?.channels || channelList.length === 0) {
     return (
       <EmptyState
         icon={Radio}
@@ -319,7 +324,7 @@ export function Channels() {
         />
 
         <StaggerContainer className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {data.channels.map((ch) => {
+          {channelList.map((ch: ChannelStatus) => {
             const label = data.channelLabels?.[ch.channelId] ?? ch.channelId;
             const accounts = ch.accounts ?? data.channelAccounts?.[ch.channelId] ?? [];
 

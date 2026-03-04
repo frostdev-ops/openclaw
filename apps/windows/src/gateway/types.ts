@@ -135,11 +135,22 @@ export interface CronRunLogEntry {
 }
 
 export interface GatewayAgentRow {
-  agentId: string;
+  id: string;
   name?: string;
-  displayName?: string;
-  description?: string;
-  isDefault?: boolean;
+  identity?: {
+    name?: string;
+    theme?: string;
+    emoji?: string;
+    avatar?: string;
+    avatarUrl?: string;
+  };
+}
+
+export interface AgentsListResult {
+  defaultId: string;
+  mainKey: string;
+  scope: string;
+  agents: GatewayAgentRow[];
 }
 
 export interface SkillStatusEntry {
@@ -184,28 +195,92 @@ export interface UsageStats {
   estimatedCostUsd?: number;
 }
 
-export interface SessionsUsageResult {
-  sessions: GatewaySessionRow[];
-  aggregates: SessionsUsageAggregates;
-  cost?: CostUsageSummary;
+export interface UsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  totalCost: number;
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
+  missingCostEntries: number;
 }
 
-export interface CostUsageSummary {
-  totalCostUsd: number;
-  byModel: Record<string, number>;
-  byChannel: Record<string, number>;
+export interface SessionMessageCounts {
+  total: number;
+  user: number;
+  assistant: number;
+  toolCalls: number;
+  toolResults: number;
+  errors: number;
+}
+
+export interface SessionToolUsage {
+  totalCalls: number;
+  uniqueTools: number;
+  tools: Array<{ name: string; count: number }>;
+}
+
+export interface SessionModelUsage {
+  provider?: string;
+  model?: string;
+  count: number;
+  totals: UsageTotals;
+}
+
+export interface SessionUsageEntry {
+  key: string;
+  label?: string;
+  sessionId?: string;
+  updatedAt?: number;
+  agentId?: string;
+  channel?: string;
+  chatType?: string;
+  model?: string;
+  modelProvider?: string;
+  usage: {
+    input: number;
+    output: number;
+    totalTokens: number;
+    totalCost: number;
+  } | null;
 }
 
 export interface SessionsUsageAggregates {
-  totalSessions: number;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  totalTokens: number;
-  totalCostUsd: number;
+  messages: SessionMessageCounts;
+  tools: SessionToolUsage;
+  byModel: SessionModelUsage[];
+  byProvider: SessionModelUsage[];
+  byAgent: Array<{ agentId: string; totals: UsageTotals }>;
+  byChannel: Array<{ channel: string; totals: UsageTotals }>;
+  daily: Array<{
+    date: string;
+    tokens: number;
+    cost: number;
+    messages: number;
+    toolCalls: number;
+    errors: number;
+  }>;
+}
+
+export interface SessionsUsageResult {
+  updatedAt: number;
+  startDate: string;
+  endDate: string;
+  sessions: SessionUsageEntry[];
+  totals: UsageTotals;
+  aggregates: SessionsUsageAggregates;
 }
 
 export interface AgentFile {
+  name: string;
   path: string;
+  missing?: boolean;
+  size?: number;
+  updatedAtMs?: number;
   content?: string;
 }
 

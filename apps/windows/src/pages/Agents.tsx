@@ -8,7 +8,7 @@ import { Button } from '../components/common/Button';
 import { cn } from '../lib/utils';
 import { PageTransition } from '../components/motion/PageTransition';
 import { FadeIn } from '../components/motion/FadeIn';
-import type { GatewayAgentRow, AgentFilesListResult, AgentFile } from '../gateway/types';
+import type { GatewayAgentRow, AgentsListResult, AgentFilesListResult, AgentFile } from '../gateway/types';
 import {
   Bot,
   ChevronRight,
@@ -28,13 +28,15 @@ import {
 function AgentCard({
   agent,
   selected,
+  isDefault,
   onSelect,
 }: {
   agent: GatewayAgentRow;
   selected: boolean;
+  isDefault: boolean;
   onSelect: () => void;
 }) {
-  const displayName = agent.displayName ?? agent.name ?? agent.agentId;
+  const displayName = agent.identity?.name ?? agent.name ?? agent.id;
 
   return (
     <button
@@ -48,21 +50,25 @@ function AgentCard({
     >
       <div className="flex items-center gap-2.5 min-w-0">
         <div className="shrink-0 w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center overflow-hidden">
-          <span className="text-base leading-none font-semibold text-primary-400">
-            {displayName.charAt(0).toUpperCase()}
-          </span>
+          {agent.identity?.emoji ? (
+            <span className="text-base leading-none">{agent.identity.emoji}</span>
+          ) : (
+            <span className="text-base leading-none font-semibold text-primary-400">
+              {displayName.charAt(0).toUpperCase()}
+            </span>
+          )}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium text-neutral-200 truncate">
               {displayName}
             </span>
-            {agent.isDefault && (
+            {isDefault && (
               <Star size={12} className="text-warning-400 shrink-0" fill="currentColor" />
             )}
           </div>
           <span className="text-[11px] text-neutral-500 font-mono truncate block">
-            {agent.agentId}
+            {agent.id}
           </span>
         </div>
       </div>
@@ -130,11 +136,11 @@ function FileList({
       </div>
 
       <div className="space-y-0.5">
-        {files.map((file) => {
-          const isSelected = selectedPath === file.path;
+        {files.filter((f) => !f.missing).map((file) => {
+          const isSelected = selectedPath === file.name;
           return (
             <button
-              key={file.path}
+              key={file.name}
               onClick={() => onSelectFile(file)}
               className={cn(
                 'w-full text-left px-3 py-2 rounded-md transition-colors flex items-center gap-2.5',
@@ -145,7 +151,7 @@ function FileList({
             >
               <File size={14} className="text-neutral-400 shrink-0" />
               <span className="text-sm text-neutral-200 truncate flex-1">
-                {file.path}
+                {file.name}
               </span>
               <ChevronRight size={14} className="text-neutral-600 shrink-0" />
             </button>
@@ -184,7 +190,7 @@ function FileEditor({
     setSaveError(null);
     setSaveSuccess(false);
 
-    const res = await rpc<{ file: AgentFile }>('agents.files.get', { agentId, path: filePath });
+    const res = await rpc<{ file: AgentFile }>('agents.files.get', { agentId, name: filePath });
     if (res.ok && res.payload) {
       const fileContent = res.payload.file?.content ?? '';
       setContent(fileContent);
@@ -209,7 +215,7 @@ function FileEditor({
     setSaveError(null);
     setSaveSuccess(false);
 
-    const res = await rpc('agents.files.set', { agentId, path: filePath, content });
+    const res = await rpc('agents.files.set', { agentId, name: filePath, content });
     if (res.ok) {
       setOriginalContent(content);
       setSaveSuccess(true);
@@ -324,7 +330,7 @@ function FileEditor({
 
 export function Agents() {
   const { rpc } = useGateway();
-  const { data, loading, error, refresh } = usePollingRpc<{ agents: GatewayAgentRow[] }>('agents.list', undefined, 30_000);
+  const { data, loading, error, refresh } = usePollingRpc<AgentsListResult>('agents.list', undefined, 30_000);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
 
@@ -334,8 +340,9 @@ export function Agents() {
   const [filesError, setFilesError] = useState<string | null>(null);
 
   const agents = data?.agents ?? [];
+  const defaultId = data?.defaultId;
   const selectedAgent = selectedAgentId
-    ? agents.find((a) => a.agentId === selectedAgentId)
+    ? agents.find((a) => a.id === selectedAgentId)
     : undefined;
 
   const fetchFiles = useCallback(
@@ -372,7 +379,7 @@ export function Agents() {
     setSelectedFilePath(null);
   }, []);
 
-  const selectedAgentName = selectedAgent?.displayName ?? selectedAgent?.name ?? selectedAgent?.agentId;
+  const selectedAgentName = selectedAgent?.identity?.name ?? selectedAgent?.name ?? selectedAgent?.id;
 
   // Loading
   if (loading && !data) {
@@ -490,10 +497,11 @@ export function Agents() {
             <div className="space-y-0.5 overflow-y-auto max-h-[calc(100vh-280px)]">
               {agents.map((agent) => (
                 <AgentCard
-                  key={agent.agentId}
+                  key={agent.id}
                   agent={agent}
-                  selected={selectedAgentId === agent.agentId}
-                  onSelect={() => handleSelectAgent(agent.agentId)}
+                  selected={selectedAgentId === agent.id}
+                  isDefault={agent.id === defaultId}
+                  onSelect={() => handleSelectAgent(agent.id)}
                 />
               ))}
             </div>
@@ -515,7 +523,7 @@ export function Agents() {
                     loading={filesLoading}
                     error={filesError}
                     selectedPath={selectedFilePath}
-                    onSelectFile={(file) => setSelectedFilePath(file.path)}
+                    onSelectFile={(file) => setSelectedFilePath(file.name)}
                     onRefresh={handleRefreshFiles}
                   />
                 </div>
