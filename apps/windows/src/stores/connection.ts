@@ -45,10 +45,10 @@ export function subscribeGatewayEvents() {
   if (_subscribed) {return;}
   _subscribed = true;
 
-  void listen<{ type: string; payload: unknown }>("gateway-event", (event) => {
-    const { type, payload } = event.payload;
+  void listen<{ event: string; payload: unknown }>("gateway-event", (event) => {
+    const { event: eventName, payload } = event.payload;
 
-    switch (type) {
+    switch (eventName) {
       case "presence.joined":
       case "presence.updated": {
         const entry = payload as PresenceEntry;
@@ -66,5 +66,8 @@ export function subscribeGatewayEvents() {
         break;
       }
     }
+  }).catch((error: unknown) => {
+    _subscribed = false;
+    console.error("[gateway-event] failed to subscribe", error);
   });
 }
