@@ -111,9 +111,16 @@ export interface GatewayConnectParams {
   displayName?: string | null;
 }
 
+export interface GatewayConnectResult {
+  ok: boolean;
+  error?: string;
+  pairingRequestId?: string;
+  deviceId?: string;
+}
+
 export async function gatewayConnect(
   params: GatewayConnectParams
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<GatewayConnectResult> {
   return invoke("gateway_connect", {
     host: params.host,
     port: params.port,

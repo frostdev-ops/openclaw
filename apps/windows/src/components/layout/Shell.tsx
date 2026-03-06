@@ -13,11 +13,21 @@ interface ShellProps {
   status: NodeStatusString;
   approvalCount: number;
   gwStatus: GatewayStatus;
+  gatewayActionError?: string | null;
   onRetryConnect?: () => void;
   children: ReactNode;
 }
 
-export function Shell({ activePage, onNavigate, status, approvalCount, gwStatus, onRetryConnect, children }: ShellProps) {
+export function Shell({
+  activePage,
+  onNavigate,
+  status,
+  approvalCount,
+  gwStatus,
+  gatewayActionError,
+  onRetryConnect,
+  children,
+}: ShellProps) {
   return (
     <div className="shell">
       <Sidebar
@@ -31,6 +41,7 @@ export function Shell({ activePage, onNavigate, status, approvalCount, gwStatus,
           activePage={activePage}
           status={status}
           gwStatus={gwStatus}
+          gatewayActionError={gatewayActionError}
           onRetryConnect={onRetryConnect}
         />
 

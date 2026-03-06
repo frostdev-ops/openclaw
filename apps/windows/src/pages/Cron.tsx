@@ -7,7 +7,7 @@ import { StatusPill } from '../components/common/StatusPill';
 import { Spinner } from '../components/common/Spinner';
 import { EmptyState } from '../components/common/EmptyState';
 import { Button } from '../components/common/Button';
-import { cn, formatRelativeTime, formatDuration } from '../lib/utils';
+import { cn, formatRelativeTime, formatDuration, getErrorMessage } from '../lib/utils';
 import { PageTransition } from '../components/motion/PageTransition';
 import { StaggerContainer, StaggerItem } from '../components/motion/StaggerContainer';
 import { FadeIn } from '../components/motion/FadeIn';
@@ -360,6 +360,7 @@ export function Cron() {
   const [logEntries, setLogEntries] = useState<CronRunLogEntry[]>([]);
   const [logLoading, setLogLoading] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // UI state
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -377,19 +378,38 @@ export function Cron() {
 
   // Fetch run logs when a job is expanded
   useEffect(() => {
+    let cancelled = false;
     if (!expandedId) {
+      setLogEntries([]);
+      setLogError(null);
+      setLogLoading(false);
       return;
     }
     setLogLoading(true);
     setLogError(null);
-    void rpc<{ entries: CronRunLogEntry[] }>('cron.runs', { id: expandedId, limit: 200 }).then((res) => {
-      if (res.ok && res.payload) {
-        setLogEntries(res.payload.entries ?? []);
-      } else if (res.error) {
-        setLogError(res.error.message);
+    void (async () => {
+      try {
+        const res = await rpc<{ entries: CronRunLogEntry[] }>('cron.runs', { id: expandedId, limit: 200 });
+        if (cancelled) { return; }
+        if (res.ok && res.payload) {
+          setLogEntries(res.payload.entries ?? []);
+        } else {
+          setLogEntries([]);
+          setLogError(res.error?.message ?? 'Failed to load cron runs');
+        }
+      } catch (error: unknown) {
+        if (cancelled) { return; }
+        setLogEntries([]);
+        setLogError(getErrorMessage(error, 'Failed to load cron runs'));
+      } finally {
+        if (!cancelled) {
+          setLogLoading(false);
+        }
       }
-      setLogLoading(false);
-    });
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [expandedId, rpc]);
 
   const handleToggleExpand = useCallback((id: string) => {
@@ -398,10 +418,16 @@ export function Cron() {
 
   const handleToggleEnabled = useCallback(
     async (job: CronJob) => {
+      setActionError(null);
       setTogglingId(job.id);
       try {
-        await rpc('cron.update', { id: job.id, enabled: !job.enabled });
+        const res = await rpc('cron.update', { id: job.id, enabled: !job.enabled });
+        if (!res.ok) {
+          throw new Error(res.error?.message ?? 'Failed to update cron job');
+        }
         refreshJobs();
+      } catch (error: unknown) {
+        setActionError(getErrorMessage(error, 'Failed to update cron job'));
       } finally {
         setTogglingId(null);
       }
@@ -411,10 +437,16 @@ export function Cron() {
 
   const handleRun = useCallback(
     async (id: string) => {
+      setActionError(null);
       setRunningId(id);
       try {
-        await rpc('cron.run', { id });
+        const res = await rpc('cron.run', { id });
+        if (!res.ok) {
+          throw new Error(res.error?.message ?? 'Failed to run cron job');
+        }
         refreshJobs();
+      } catch (error: unknown) {
+        setActionError(getErrorMessage(error, 'Failed to run cron job'));
       } finally {
         setRunningId(null);
       }
@@ -424,11 +456,17 @@ export function Cron() {
 
   const handleDelete = useCallback(
     async (id: string) => {
+      setActionError(null);
       setDeletingId(id);
       try {
-        await rpc('cron.remove', { id });
+        const res = await rpc('cron.remove', { id });
+        if (!res.ok) {
+          throw new Error(res.error?.message ?? 'Failed to remove cron job');
+        }
         setExpandedId(null);
         refreshJobs();
+      } catch (error: unknown) {
+        setActionError(getErrorMessage(error, 'Failed to remove cron job'));
       } finally {
         setDeletingId(null);
       }
@@ -491,6 +529,12 @@ export function Cron() {
               </div>
             )}
           </div>
+          {actionError && (
+            <div className="mt-3 flex items-center gap-2 text-sm text-error-400">
+              <AlertCircle size={14} />
+              <span>{actionError}</span>
+            </div>
+          )}
         </Card>
 
         {/* Job list */}

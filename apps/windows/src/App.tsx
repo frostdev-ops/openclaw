@@ -18,6 +18,7 @@ import { Chat } from "./pages/Chat";
 import { SessionReplay } from "./pages/SessionReplay";
 import { GatewayProvider, useGateway } from "./gateway/context";
 import { subscribeGatewayEvents } from "./stores/connection";
+import { getErrorMessage } from "./lib/utils";
 import type { PageId, PageState } from "./types";
 import type { NodeStatusString } from "./tauri/types";
 import { getConfig, getStatus, gatewayConnect } from "./tauri/commands";
@@ -31,6 +32,7 @@ function AppContent() {
   const [pageState, setPageState] = useState<PageState>({});
   const [status, setStatus] = useState<NodeStatusString>("stopped");
   const [approvalCount, setApprovalCount] = useState(0);
+  const [gatewayActionError, setGatewayActionError] = useState<string | null>(null);
   const { status: gwStatus } = useGateway();
 
   const onNavigate = useCallback((page: PageId, state?: PageState) => {
@@ -39,9 +41,10 @@ function AppContent() {
   }, []);
 
   const handleRetryConnect = useCallback(async () => {
+    setGatewayActionError(null);
     try {
       const cfg = await getConfig();
-      await gatewayConnect({
+      const result = await gatewayConnect({
         host: cfg.host,
         port: cfg.port,
         tls: cfg.tls,
@@ -50,8 +53,13 @@ function AppContent() {
         nodeId: cfg.nodeId,
         displayName: cfg.displayName,
       });
-    } catch {
-      // retry failed silently — status poll will update UI
+      if (!result.ok) {
+        throw new Error(result.error ?? "Gateway reconnect request failed");
+      }
+    } catch (error: unknown) {
+      const message = getErrorMessage(error, "Gateway reconnect failed");
+      setGatewayActionError(message);
+      console.error("[gateway-retry] failed", error);
     }
   }, []);
 
@@ -68,12 +76,32 @@ function AppContent() {
     void refreshStatus();
     const interval = setInterval(() => void refreshStatus(), 7000);
     let unlisten: (() => void) | null = null;
-    void onNodeStatusChanged((s) => setStatus(s)).then((fn) => { unlisten = fn; });
+    let disposed = false;
+    void onNodeStatusChanged((s) => setStatus(s))
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((error: unknown) => {
+        console.error("[node-status-changed] listener registration failed", error);
+      });
     return () => {
+      disposed = true;
       clearInterval(interval);
       unlisten?.();
     };
   }, [refreshStatus]);
+
+  useEffect(() => {
+    if (gwStatus.state === "error" && gwStatus.error) {
+      setGatewayActionError(gwStatus.error);
+      return;
+    }
+    setGatewayActionError(null);
+  }, [gwStatus.error, gwStatus.state]);
 
   const renderPage = () => {
     switch (activePage) {
@@ -131,6 +159,7 @@ function AppContent() {
       status={status}
       approvalCount={approvalCount}
       gwStatus={gwStatus}
+      gatewayActionError={gatewayActionError}
       onRetryConnect={handleRetryConnect}
     >
       <ErrorBoundary key={activePage}>
@@ -142,8 +171,10 @@ function AppContent() {
 
 export function App() {
   return (
-    <GatewayProvider>
-      <AppContent />
-    </GatewayProvider>
+    <ErrorBoundary>
+      <GatewayProvider>
+        <AppContent />
+      </GatewayProvider>
+    </ErrorBoundary>
   );
 }

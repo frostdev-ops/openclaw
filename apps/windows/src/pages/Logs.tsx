@@ -9,7 +9,7 @@ import { FadeIn } from "../components/motion/FadeIn";
 import { getStatus } from "../tauri/commands";
 import { onNodeLog } from "../tauri/events";
 import { useGateway } from "../gateway/context";
-import { cn } from "../lib/utils";
+import { cn, getErrorMessage } from "../lib/utils";
 import {
   Play,
   Pause,
@@ -184,6 +184,7 @@ export function Logs() {
   const [gwLevelFilter, setGwLevelFilter] = useState<Set<LogLevel>>(new Set(ALL_LEVELS));
   const [gwSubsystemFilter, setGwSubsystemFilter] = useState("");
   const [gwSearchText, setGwSearchText] = useState("");
+  const [gwError, setGwError] = useState<string | null>(null);
   const gwCursorRef = useRef<number | undefined>(undefined);
 
   // ---- Shared scroll state ----
@@ -226,59 +227,87 @@ export function Logs() {
     void getStatus().then((s) => {
       const initial = s.logs ?? [];
       setNodeLines(initial.slice(-NODE_LOG_CAP));
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      console.error("[getStatus] failed to preload node logs", error);
+    });
 
+    let disposed = false;
     void onNodeLog((line) => {
       setNodeLines((prev) => {
         const next = [...prev, line].slice(-NODE_LOG_CAP);
         return next;
       });
       checkPairing(line);
-    }).then((fn) => { unlistenRef.current = fn; });
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenRef.current = fn;
+      })
+      .catch((error: unknown) => {
+        console.error("[node-log] listener registration failed", error);
+      });
 
-    return () => { unlistenRef.current?.(); };
+    return () => {
+      disposed = true;
+      unlistenRef.current?.();
+    };
   }, [checkPairing]);
 
   // ---- Gateway logs polling ----
   const fetchGwLogs = useCallback(async () => {
-    if (!connected) { return; }
-
-    const params: Record<string, unknown> = { limit: 120 };
-    if (gwCursorRef.current !== undefined) {
-      params.cursor = gwCursorRef.current;
+    if (!connected) {
+      setGwError(null);
+      return;
     }
 
-    const res = await rpc<LogsTailResult>("logs.tail", params);
-    if (!res.ok || !res.payload) { return; }
-
-    const payload = res.payload;
-    if (typeof payload.cursor === "number") {
-      gwCursorRef.current = payload.cursor;
-    }
-
-    const shouldReset = Boolean(payload.reset || gwCursorRef.current == null);
-
-    // Parse entries from structured entries array or raw lines
-    let parsed: GatewayLogEntry[] = [];
-    if (Array.isArray(payload.entries) && payload.entries.length > 0) {
-      parsed = payload.entries.map(parseStructuredEntry);
-    } else if (Array.isArray(payload.lines)) {
-      const lines = payload.lines.filter((l): l is string => typeof l === "string");
-      parsed = lines.map(parseLogLine);
-    }
-
-    if (parsed.length === 0) { return; }
-
-    setGwEntries((prev) => {
-      const merged = shouldReset ? parsed : [...prev, ...parsed];
-      if (merged.length > GW_LOG_CAP) {
-        return merged.slice(merged.length - GW_LOG_CAP);
+    try {
+      const params: Record<string, unknown> = { limit: 120 };
+      if (gwCursorRef.current !== undefined) {
+        params.cursor = gwCursorRef.current;
       }
-      return merged;
-    });
 
-    if (!isNearBottom.current) {
-      setUnseenCount((prev) => prev + parsed.length);
+      const res = await rpc<LogsTailResult>("logs.tail", params);
+      if (!res.ok || !res.payload) {
+        setGwError(res.error?.message ?? "Failed to tail gateway logs");
+        return;
+      }
+
+      setGwError(null);
+
+      const payload = res.payload;
+      if (typeof payload.cursor === "number") {
+        gwCursorRef.current = payload.cursor;
+      }
+
+      const shouldReset = Boolean(payload.reset || gwCursorRef.current == null);
+
+      // Parse entries from structured entries array or raw lines
+      let parsed: GatewayLogEntry[] = [];
+      if (Array.isArray(payload.entries) && payload.entries.length > 0) {
+        parsed = payload.entries.map(parseStructuredEntry);
+      } else if (Array.isArray(payload.lines)) {
+        const lines = payload.lines.filter((l): l is string => typeof l === "string");
+        parsed = lines.map(parseLogLine);
+      }
+
+      if (parsed.length === 0) { return; }
+
+      setGwEntries((prev) => {
+        const merged = shouldReset ? parsed : [...prev, ...parsed];
+        if (merged.length > GW_LOG_CAP) {
+          return merged.slice(merged.length - GW_LOG_CAP);
+        }
+        return merged;
+      });
+
+      if (!isNearBottom.current) {
+        setUnseenCount((prev) => prev + parsed.length);
+      }
+    } catch (error: unknown) {
+      setGwError(getErrorMessage(error, "Failed to tail gateway logs"));
     }
   }, [connected, rpc]);
 
@@ -340,6 +369,7 @@ export function Logs() {
       setNodeLines([]);
     } else {
       setGwEntries([]);
+      setGwError(null);
       gwCursorRef.current = undefined;
     }
   };
@@ -474,6 +504,9 @@ export function Logs() {
                 <Badge variant="default">
                   {filteredGwEntries.length} / {gwEntries.length}
                 </Badge>
+                {gwError && (
+                  <span className="text-xs text-error-400">{gwError}</span>
+                )}
               </>
             )}
           </div>

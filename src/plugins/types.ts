@@ -365,6 +365,8 @@ export const PLUGIN_HOOK_NAMES = [
   "subagent_ended",
   "gateway_start",
   "gateway_stop",
+  "resolve_model",
+  "assistant_message_end",
 ] as const satisfies readonly PluginHookName[];
 
 type MissingPluginHookNames = Exclude<PluginHookName, (typeof PLUGIN_HOOK_NAMES)[number]>;

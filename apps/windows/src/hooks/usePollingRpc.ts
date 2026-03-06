@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useGateway } from '../gateway/context';
+import { getErrorMessage } from '../lib/utils';
 
 interface UsePollingRpcResult<T> {
   data: T | null;
@@ -22,28 +23,57 @@ export function usePollingRpc<T = unknown>(
   const [paused, setPaused] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cursorRef = useRef<unknown>(undefined);
+  const requestSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const fetchData = useCallback(async () => {
-    if (status.state !== 'connected') {return;}
+    if (status.state !== 'connected') {
+      if (mountedRef.current) {
+        setLoading(false);
+      }
+      return;
+    }
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
 
     const rpcParams: Record<string, unknown> = { ...params };
     if (cursorRef.current !== undefined) {
       rpcParams.cursor = cursorRef.current;
     }
 
-    const res = await rpc<T>(method, rpcParams);
-    if (res.ok && res.payload !== undefined) {
-      setData(res.payload);
-      setError(null);
-      // Extract cursor if present for log tailing
-      const p = res.payload as Record<string, unknown>;
-      if (p && typeof p === 'object' && 'cursor' in p) {
-        cursorRef.current = p.cursor;
+    try {
+      const res = await rpc<T>(method, rpcParams);
+      if (!mountedRef.current || requestSeq !== requestSeqRef.current) {
+        return;
       }
-    } else if (res.error) {
-      setError(res.error.message);
+      if (res.ok && res.payload !== undefined) {
+        setData(res.payload);
+        setError(null);
+        // Extract cursor if present for log tailing
+        const p = res.payload as Record<string, unknown>;
+        if (p && typeof p === 'object' && 'cursor' in p) {
+          cursorRef.current = p.cursor;
+        }
+      } else if (res.error) {
+        setError(res.error.message);
+      }
+    } catch (err: unknown) {
+      if (!mountedRef.current || requestSeq !== requestSeqRef.current) {
+        return;
+      }
+      setError(getErrorMessage(err, `Failed to call ${method}`));
+    } finally {
+      if (mountedRef.current && requestSeq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
-    setLoading(false);
   }, [rpc, method, params, status.state]);
 
   const refresh = useCallback(() => {

@@ -13,17 +13,27 @@ export function useGatewayEvent<T = unknown>(
   callbackRef.current = callback;
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | null = null;
 
     void listen<{ event: string; payload: T }>("gateway-event", (event) => {
       if (event.payload.event === eventName) {
         callbackRef.current(event.payload.payload);
       }
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((error: unknown) => {
+        console.error("[gateway-event] listener registration failed", error);
+      });
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, [eventName]);
@@ -37,15 +47,25 @@ export function useGatewayConnected(callback: (hello: unknown) => void): void {
   callbackRef.current = callback;
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | null = null;
 
     void listen<unknown>("gateway-connected", (event) => {
       callbackRef.current(event.payload);
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((error: unknown) => {
+        console.error("[gateway-connected] listener registration failed", error);
+      });
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, []);
@@ -59,15 +79,25 @@ export function useGatewayDisconnected(callback: (error?: string) => void): void
   callbackRef.current = callback;
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | null = null;
 
     void listen<{ error?: string }>("gateway-disconnected", (event) => {
       callbackRef.current(event.payload?.error);
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch((error: unknown) => {
+        console.error("[gateway-disconnected] listener registration failed", error);
+      });
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, []);

@@ -15,7 +15,7 @@ import { Button } from "../components/common/Button";
 import { PageTransition } from "../components/motion/PageTransition";
 import { FadeIn } from "../components/motion/FadeIn";
 import { StaggerContainer, StaggerItem } from "../components/motion/StaggerContainer";
-import { cn, formatRelativeTime } from "../lib/utils";
+import { cn, formatRelativeTime, getErrorMessage } from "../lib/utils";
 import { motion } from "motion/react";
 import {
   Activity,
@@ -78,7 +78,7 @@ function collectScalars(
   }
 
   if (isRecord(value)) {
-    for (const key of [...Object.keys(value)].sort()) {
+    for (const key of Object.keys(value).toSorted()) {
       collectScalars(value[key], path === "root" ? key : `${path}.${key}`, depth + 1, out);
       if (out.length >= MAX_SCALARS) { break; }
     }
@@ -211,21 +211,72 @@ export function Overview({ status, onStatusChange, onNavigateToLogs }: OverviewP
   // Fetch cron status
   const [cronStatus, setCronStatus] = useState<CronStatus | null>(null);
   useEffect(() => {
-    if (!connected) { return; }
-    void rpc<CronStatus>("cron.status", {}).then((res) => {
-      if (res.ok && res.payload) { setCronStatus(res.payload); }
-    });
+    let cancelled = false;
+    if (!connected) {
+      setCronStatus(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void (async () => {
+      try {
+        const res = await rpc<CronStatus>("cron.status", {});
+        if (cancelled) { return; }
+        if (res.ok && res.payload) {
+          setCronStatus(res.payload);
+        } else {
+          setCronStatus(null);
+        }
+      } catch (error: unknown) {
+        if (cancelled) { return; }
+        console.error("[cron.status] failed", getErrorMessage(error, "Request failed"));
+        setCronStatus(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [connected, rpc]);
 
   // Fetch status data for health insights
   const [statusData, setStatusData] = useState<StatusSummary | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
   useEffect(() => {
-    if (!connected) { return; }
+    let cancelled = false;
+    if (!connected) {
+      setStatusData(null);
+      setStatusLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     setStatusLoading(true);
-    void rpc<StatusSummary>("status", {}).then((res) => {
-      if (res.ok && res.payload) { setStatusData(res.payload); }
-    }).finally(() => setStatusLoading(false));
+    void (async () => {
+      try {
+        const res = await rpc<StatusSummary>("status", {});
+        if (cancelled) { return; }
+        if (res.ok && res.payload) {
+          setStatusData(res.payload);
+        } else {
+          setStatusData(null);
+        }
+      } catch (error: unknown) {
+        if (cancelled) { return; }
+        console.error("[status] failed", getErrorMessage(error, "Request failed"));
+        setStatusData(null);
+      } finally {
+        if (!cancelled) {
+          setStatusLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [connected, rpc]);
 
   // Track presence history for sparkline
@@ -576,15 +627,15 @@ function HealthInsightsPanel({
   );
 
   const topMetrics = useMemo(
-    () => [...numericEntries].sort((a: typeof numericEntries[number], b: typeof numericEntries[number]) => metricPriority(a.path) - metricPriority(b.path)).slice(0, 8),
+    () => [...numericEntries].toSorted((a: typeof numericEntries[number], b: typeof numericEntries[number]) => metricPriority(a.path) - metricPriority(b.path)).slice(0, 8),
     [numericEntries],
   );
 
   const grouped = useMemo(() => {
     if (!isRecord(statusData)) { return [] as Array<{ key: string; entries: ScalarEntry[]; pass: number; fail: number }>; }
 
-    return [...Object.keys(statusData)]
-      .sort()
+    return Object.keys(statusData)
+      .toSorted()
       .map((key: string) => {
         const groupEntries = collectScalars(statusData[key], key);
         const filteredEntries = filterLower
@@ -600,7 +651,7 @@ function HealthInsightsPanel({
         return { key, entries: filteredEntries, pass, fail };
       })
       .filter((group: { key: string; entries: ScalarEntry[]; pass: number; fail: number }) => group.entries.length > 0)
-      .sort((a: { entries: ScalarEntry[] }, b: { entries: ScalarEntry[] }) => b.entries.length - a.entries.length);
+      .toSorted((a: { entries: ScalarEntry[] }, b: { entries: ScalarEntry[] }) => b.entries.length - a.entries.length);
   }, [statusData, filterLower]);
 
   return (

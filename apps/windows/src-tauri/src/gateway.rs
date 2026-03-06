@@ -12,7 +12,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
@@ -110,7 +113,22 @@ pub struct GatewayState {
     // Sender to the background WS task for outgoing RPC calls
     tx: Mutex<Option<mpsc::UnboundedSender<RpcRequest>>>,
     // Counter for generating unique RPC request IDs
-    seq: Mutex<u64>,
+    seq: AtomicU64,
+    // Connection attempt generation used to ignore stale tasks.
+    connect_attempt: AtomicU64,
+}
+
+fn lock_or_recover<'a, T>(
+    mutex: &'a Mutex<T>,
+    label: &str,
+) -> std::sync::MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("recovering poisoned mutex: {}", label);
+            poisoned.into_inner()
+        }
+    }
 }
 
 impl GatewayState {
@@ -118,27 +136,55 @@ impl GatewayState {
         Self {
             status: Mutex::new(GatewayConnectionStatus::default()),
             tx: Mutex::new(None),
-            seq: Mutex::new(0),
+            seq: AtomicU64::new(0),
+            connect_attempt: AtomicU64::new(0),
         }
     }
 
     fn next_id(&self) -> String {
-        let mut seq = self.seq.lock().unwrap();
-        *seq += 1;
-        format!("ctrl-{}", *seq)
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("ctrl-{}", seq)
+    }
+
+    pub fn begin_attempt(&self) -> u64 {
+        self.connect_attempt.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn is_current_attempt(&self, attempt: u64) -> bool {
+        self.connect_attempt.load(Ordering::SeqCst) == attempt
     }
 
     pub fn get_status(&self) -> GatewayConnectionStatus {
-        self.status.lock().unwrap().clone()
+        lock_or_recover(&self.status, "gateway.status").clone()
     }
 
     fn set_status(&self, status: GatewayConnectionStatus) {
-        *self.status.lock().unwrap() = status;
+        *lock_or_recover(&self.status, "gateway.status") = status;
     }
 
     fn set_tx(&self, tx: Option<mpsc::UnboundedSender<RpcRequest>>) {
-        *self.tx.lock().unwrap() = tx;
+        *lock_or_recover(&self.tx, "gateway.tx") = tx;
     }
+}
+
+fn set_status_if_current(state: &GatewayState, attempt: u64, status: GatewayConnectionStatus) -> bool {
+    if !state.is_current_attempt(attempt) {
+        return false;
+    }
+    state.set_status(status);
+    true
+}
+
+fn emit_disconnected_if_current(
+    app: &AppHandle,
+    state: &GatewayState,
+    attempt: u64,
+    error: Option<String>,
+) {
+    if !state.is_current_attempt(attempt) {
+        return;
+    }
+    let _ = app.emit("gateway-disconnected", serde_json::json!({ "error": error }));
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +265,7 @@ fn save_device_identity(data_dir: &Path, identity: &DeviceIdentity) {
 pub async fn run_gateway_connection(
     app: AppHandle,
     state: Arc<GatewayState>,
+    attempt: u64,
     url: String,
     token: Option<String>,
     password: Option<String>,
@@ -226,6 +273,10 @@ pub async fn run_gateway_connection(
     display_name: Option<String>,
     data_dir: PathBuf,
 ) {
+    if !state.is_current_attempt(attempt) {
+        return;
+    }
+
     let (rpc_tx, mut rpc_rx) = mpsc::unbounded_channel::<RpcRequest>();
 
     // Pending RPC callbacks keyed by request ID
@@ -243,33 +294,30 @@ pub async fn run_gateway_connection(
         Ok(Ok((stream, _))) => stream,
         Ok(Err(e)) => {
             let msg = format!("WS connect failed: {}", e);
-            state.set_status(GatewayConnectionStatus {
+            let _ = set_status_if_current(&state, attempt, GatewayConnectionStatus {
                 state: "error".to_string(),
                 error: Some(msg.clone()),
                 ..Default::default()
             });
-            let _ = app.emit(
-                "gateway-disconnected",
-                serde_json::json!({ "error": msg }),
-            );
+            emit_disconnected_if_current(&app, &state, attempt, Some(msg));
             return;
         }
         Err(_) => {
             let msg = "Connection timed out".to_string();
-            state.set_status(GatewayConnectionStatus {
+            let _ = set_status_if_current(&state, attempt, GatewayConnectionStatus {
                 state: "error".to_string(),
                 error: Some(msg.clone()),
                 ..Default::default()
             });
-            let _ = app.emit(
-                "gateway-disconnected",
-                serde_json::json!({ "error": msg }),
-            );
+            emit_disconnected_if_current(&app, &state, attempt, Some(msg));
             return;
         }
     };
 
     let (mut write, mut read) = ws_stream.split();
+    if !state.is_current_attempt(attempt) {
+        return;
+    }
 
     // Load device identity
     let mut identity = load_or_create_device_identity(&data_dir).unwrap_or_else(|_| {
@@ -321,7 +369,10 @@ pub async fn run_gateway_connection(
         // Reconstruct signing key from stored seed
         if let Ok(seed_bytes) = URL_SAFE_NO_PAD.decode(&identity.private_key_bytes) {
             if seed_bytes.len() == 32 {
-                let seed_arr: [u8; 32] = seed_bytes.try_into().unwrap_or([0u8; 32]);
+                let seed_arr: [u8; 32] = match seed_bytes.try_into() {
+                    Ok(arr) => arr,
+                    Err(_) => return None,
+                };
                 let signing_key = SigningKey::from_bytes(&seed_arr);
                 let signed_at_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -414,20 +465,35 @@ pub async fn run_gateway_connection(
         "params": Value::Object(params_map),
     });
 
-    let msg_str = serde_json::to_string(&connect_payload).unwrap_or_default();
+    let msg_str = match serde_json::to_string(&connect_payload) {
+        Ok(payload) => payload,
+        Err(e) => {
+            let err_msg = format!("Failed to encode connect payload: {}", e);
+            let _ = set_status_if_current(&state, attempt, GatewayConnectionStatus {
+                state: "error".to_string(),
+                error: Some(err_msg.clone()),
+                ..Default::default()
+            });
+            emit_disconnected_if_current(&app, &state, attempt, Some(err_msg));
+            return;
+        }
+    };
     if let Err(e) = write.send(Message::Text(msg_str.into())).await {
         let err_msg = format!("Failed to send connect: {}", e);
-        state.set_status(GatewayConnectionStatus {
+        let _ = set_status_if_current(&state, attempt, GatewayConnectionStatus {
             state: "error".to_string(),
             error: Some(err_msg.clone()),
             ..Default::default()
         });
-        let _ = app.emit("gateway-disconnected", serde_json::json!({ "error": err_msg }));
+        emit_disconnected_if_current(&app, &state, attempt, Some(err_msg));
         return;
     }
 
     // Wait for hello-ok response
     let hello_ok = loop {
+        if !state.is_current_attempt(attempt) {
+            return;
+        }
         match tokio::time::timeout(Duration::from_secs(15), read.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => {
                 let parsed: Value = match serde_json::from_str(&text) {
@@ -461,29 +527,31 @@ pub async fn run_gateway_connection(
                                 .and_then(|e| e.get("requestId"))
                                 .and_then(|r| r.as_str())
                                 .map(|s| s.to_string());
-                            state.set_status(GatewayConnectionStatus {
+                            let status_applied = set_status_if_current(&state, attempt, GatewayConnectionStatus {
                                 state: "pairing".to_string(),
                                 pairing_request_id: request_id.clone(),
                                 device_id: Some(identity.device_id.clone()),
                                 error: None,
                                 ..Default::default()
                             });
-                            let _ = app.emit(
-                                "gateway-pairing-required",
-                                serde_json::json!({
-                                    "requestId": request_id,
-                                    "deviceId": identity.device_id,
-                                }),
-                            );
+                            if status_applied {
+                                let _ = app.emit(
+                                    "gateway-pairing-required",
+                                    serde_json::json!({
+                                        "requestId": request_id,
+                                        "deviceId": identity.device_id,
+                                    }),
+                                );
+                            }
                             return;
                         }
 
-                        state.set_status(GatewayConnectionStatus {
+                        let _ = set_status_if_current(&state, attempt, GatewayConnectionStatus {
                             state: "error".to_string(),
                             error: Some(err.clone()),
                             ..Default::default()
                         });
-                        let _ = app.emit("gateway-disconnected", serde_json::json!({ "error": err }));
+                        emit_disconnected_if_current(&app, &state, attempt, Some(err));
                         return;
                     }
                 }
@@ -494,18 +562,20 @@ pub async fn run_gateway_connection(
                     if cf.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy {
                         let reason = cf.reason.to_string();
                         if reason.contains("PAIRING_REQUIRED") || reason.contains("1008") {
-                            state.set_status(GatewayConnectionStatus {
+                            let status_applied = set_status_if_current(&state, attempt, GatewayConnectionStatus {
                                 state: "pairing".to_string(),
                                 device_id: Some(identity.device_id.clone()),
                                 error: None,
                                 ..Default::default()
                             });
-                            let _ = app.emit(
-                                "gateway-pairing-required",
-                                serde_json::json!({
-                                    "deviceId": identity.device_id,
-                                }),
-                            );
+                            if status_applied {
+                                let _ = app.emit(
+                                    "gateway-pairing-required",
+                                    serde_json::json!({
+                                        "deviceId": identity.device_id,
+                                    }),
+                                );
+                            }
                             return;
                         }
                         format!("Connection closed: {}", reason)
@@ -515,32 +585,32 @@ pub async fn run_gateway_connection(
                 } else {
                     "Connection closed during handshake".to_string()
                 };
-                state.set_status(GatewayConnectionStatus {
+                let _ = set_status_if_current(&state, attempt, GatewayConnectionStatus {
                     state: "error".to_string(),
                     error: Some(err.clone()),
                     ..Default::default()
                 });
-                let _ = app.emit("gateway-disconnected", serde_json::json!({ "error": err }));
+                emit_disconnected_if_current(&app, &state, attempt, Some(err));
                 return;
             }
             Ok(None) => {
                 let err = "Connection closed during handshake".to_string();
-                state.set_status(GatewayConnectionStatus {
+                let _ = set_status_if_current(&state, attempt, GatewayConnectionStatus {
                     state: "error".to_string(),
                     error: Some(err.clone()),
                     ..Default::default()
                 });
-                let _ = app.emit("gateway-disconnected", serde_json::json!({ "error": err }));
+                emit_disconnected_if_current(&app, &state, attempt, Some(err));
                 return;
             }
             Err(_) => {
                 let err = "Handshake timed out".to_string();
-                state.set_status(GatewayConnectionStatus {
+                let _ = set_status_if_current(&state, attempt, GatewayConnectionStatus {
                     state: "error".to_string(),
                     error: Some(err.clone()),
                     ..Default::default()
                 });
-                let _ = app.emit("gateway-disconnected", serde_json::json!({ "error": err }));
+                emit_disconnected_if_current(&app, &state, attempt, Some(err));
                 return;
             }
             _ => continue,
@@ -589,7 +659,7 @@ pub async fn run_gateway_connection(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    state.set_status(GatewayConnectionStatus {
+    if !set_status_if_current(&state, attempt, GatewayConnectionStatus {
         state: "connected".to_string(),
         conn_id: conn_id.clone(),
         protocol,
@@ -598,33 +668,53 @@ pub async fn run_gateway_connection(
         connected_at_ms: Some(connected_at_ms),
         device_id: Some(identity.device_id.clone()),
         pairing_request_id: None,
-    });
+    }) {
+        return;
+    }
 
+    if !state.is_current_attempt(attempt) {
+        return;
+    }
     state.set_tx(Some(rpc_tx));
 
-    let _ = app.emit("gateway-connected", &hello_ok);
+    if state.is_current_attempt(attempt) {
+        let _ = app.emit("gateway-connected", &hello_ok);
+    }
 
     // Main loop: handle inbound messages and outbound RPC requests
     let pending_clone = pending.clone();
 
     loop {
+        if !state.is_current_attempt(attempt) {
+            break;
+        }
         tokio::select! {
             // Outbound RPC request from a Tauri command
             rpc_req = rpc_rx.recv() => {
                 match rpc_req {
                     None => break, // channel closed = disconnect requested
                     Some(req) => {
+                        if !state.is_current_attempt(attempt) {
+                            let _ = req.reply.send(Err("Connection superseded".to_string()));
+                            break;
+                        }
                         let frame = ReqFrame {
                             frame_type: "req".to_string(),
                             id: req.id.clone(),
                             method: req.method,
                             params: req.params,
                         };
-                        let json = serde_json::to_string(&frame).unwrap_or_default();
+                        let json = match serde_json::to_string(&frame) {
+                            Ok(payload) => payload,
+                            Err(e) => {
+                                let _ = req.reply.send(Err(format!("encode failed: {}", e)));
+                                continue;
+                            }
+                        };
                         if let Err(e) = write.send(Message::Text(json.into())).await {
                             let _ = req.reply.send(Err(format!("send failed: {}", e)));
                         } else {
-                            pending_clone.lock().unwrap().insert(req.id, req.reply);
+                            lock_or_recover(&pending_clone, "gateway.pending").insert(req.id, req.reply);
                         }
                     }
                 }
@@ -645,7 +735,7 @@ pub async fn run_gateway_connection(
                             "res" => {
                                 let id = parsed.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
                                 let ok = parsed.get("ok").and_then(|o| o.as_bool()).unwrap_or(false);
-                                if let Some(reply) = pending_clone.lock().unwrap().remove(&id) {
+                                if let Some(reply) = lock_or_recover(&pending_clone, "gateway.pending").remove(&id) {
                                     let result = if ok {
                                         Ok(parsed.get("payload").cloned().unwrap_or(Value::Null))
                                     } else {
@@ -686,20 +776,20 @@ pub async fn run_gateway_connection(
         }
     }
 
-    // Connection closed
-    state.set_tx(None);
-    state.set_status(GatewayConnectionStatus {
-        state: "disconnected".to_string(),
-        ..Default::default()
-    });
-
     // Fail all pending RPC requests
-    let mut pending_map = pending.lock().unwrap();
+    let mut pending_map = lock_or_recover(&pending, "gateway.pending");
     for (_, reply) in pending_map.drain() {
         let _ = reply.send(Err("Connection closed".to_string()));
     }
 
-    let _ = app.emit("gateway-disconnected", serde_json::json!({ "error": null }));
+    if state.is_current_attempt(attempt) {
+        state.set_tx(None);
+        state.set_status(GatewayConnectionStatus {
+            state: "disconnected".to_string(),
+            ..Default::default()
+        });
+        let _ = app.emit("gateway-disconnected", serde_json::json!({ "error": null }));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -720,19 +810,26 @@ pub async fn gateway_connect(
 ) -> Result<serde_json::Value, String> {
     let scheme = if tls { "wss" } else { "ws" };
     let url = format!("{}://{}:{}", scheme, host, port);
+    let attempt = state.begin_attempt();
+
+    // Drop any previous sender so older loops observe closure and exit.
+    state.set_tx(None);
 
     state.set_status(GatewayConnectionStatus {
         state: "connecting".to_string(),
         ..Default::default()
     });
 
-    let data_dir = app.path().app_data_dir()
+    let data_dir = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("failed to get data dir: {}", e))?;
 
     let state_clone = Arc::clone(&state);
     tauri::async_runtime::spawn(run_gateway_connection(
         app,
         state_clone,
+        attempt,
         url,
         token,
         password,
@@ -741,28 +838,53 @@ pub async fn gateway_connect(
         data_dir,
     ));
 
-    // Give the background task a moment to connect
-    tokio::time::sleep(Duration::from_millis(3000)).await;
+    // Wait for this attempt to complete, fail, pair, or timeout.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if !state.is_current_attempt(attempt) {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "error": "Connection attempt superseded by a newer request",
+            }));
+        }
 
-    let current = state.get_status();
-    if current.state == "connected" {
-        Ok(serde_json::json!({ "ok": true }))
-    } else if current.state == "pairing" {
-        Ok(serde_json::json!({
-            "ok": false,
-            "error": "PAIRING_REQUIRED",
-            "pairingRequestId": current.pairing_request_id,
-            "deviceId": current.device_id,
-        }))
-    } else if current.state == "error" {
-        Ok(serde_json::json!({ "ok": false, "error": current.error }))
-    } else {
-        Ok(serde_json::json!({ "ok": false, "error": "Connection in progress" }))
+        let current = state.get_status();
+        if current.state == "connected" {
+            return Ok(serde_json::json!({ "ok": true }));
+        }
+        if current.state == "pairing" {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "error": "PAIRING_REQUIRED",
+                "pairingRequestId": current.pairing_request_id,
+                "deviceId": current.device_id,
+            }));
+        }
+        if current.state == "error" {
+            return Ok(serde_json::json!({ "ok": false, "error": current.error }));
+        }
+        if current.state != "connecting" {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "error": format!("Unexpected gateway state: {}", current.state),
+            }));
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "error": "Connection timed out while waiting for gateway response",
+            }));
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
 #[tauri::command]
 pub fn gateway_disconnect(state: tauri::State<'_, Arc<GatewayState>>) {
+    // Invalidate any in-flight handshake or stream loop.
+    state.begin_attempt();
     // Drop the sender, which causes the background task to break its loop
     state.set_tx(None);
     state.set_status(GatewayConnectionStatus::default());
@@ -780,7 +902,7 @@ pub async fn gateway_rpc(
     state: tauri::State<'_, Arc<GatewayState>>,
 ) -> Result<serde_json::Value, String> {
     let tx = {
-        let lock = state.tx.lock().unwrap();
+        let lock = lock_or_recover(&state.tx, "gateway.tx");
         lock.clone()
     };
 

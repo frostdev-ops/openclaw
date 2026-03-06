@@ -1435,8 +1435,12 @@ fn start_node_internal(app: &AppHandle) -> Result<(), String> {
     // Sentinel "node_path::mjs_path" means bundled runtime: run `node openclaw.mjs ...`
     let mut command = if openclaw_bin.contains("::") {
         let mut parts = openclaw_bin.splitn(2, "::");
-        let node = parts.next().unwrap();
-        let mjs = parts.next().unwrap();
+        let node = parts
+            .next()
+            .ok_or_else(|| "Invalid bundled runtime sentinel: missing node path".to_string())?;
+        let mjs = parts
+            .next()
+            .ok_or_else(|| "Invalid bundled runtime sentinel: missing entry script path".to_string())?;
         let mut c = Command::new(node);
         c.arg(mjs);
         c
@@ -2601,12 +2605,14 @@ fn main() {
                 let gw_display_name = config.display_name.clone();
                 let gw_data_dir = app.path().app_data_dir()
                     .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let gw_attempt = gw_state.begin_attempt();
                 tauri::async_runtime::spawn(async move {
                     // Short delay to let the node process start first
                     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
                     gateway::run_gateway_connection(
                         gw_app,
                         gw_state,
+                        gw_attempt,
                         format!("{}://{}:{}", if gw_tls { "wss" } else { "ws" }, gw_host, gw_port),
                         gw_token,
                         gw_password,
@@ -2620,9 +2626,13 @@ fn main() {
             Ok(())
         });
 
-    let app = builder
-        .build(tauri::generate_context!())
-        .expect("error while building OpenClaw Node Client");
+    let app = match builder.build(tauri::generate_context!()) {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("error while building OpenClaw Node Client: {}", err);
+            return;
+        }
+    };
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {

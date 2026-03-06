@@ -23,13 +23,16 @@ interface TopBarProps {
   activePage: string;
   status: NodeStatusString;
   gwStatus: GatewayStatus;
+  gatewayActionError?: string | null;
   onRetryConnect?: () => void;
 }
 
-export function TopBar({ activePage, status, gwStatus, onRetryConnect }: TopBarProps) {
+export function TopBar({ activePage, status, gwStatus, gatewayActionError, onRetryConnect }: TopBarProps) {
   const isRunning = status === "running";
   const isPairing = gwStatus.state === "pairing";
   const isConnected = gwStatus.state === "connected";
+  const isError = gwStatus.state === "error";
+  const effectiveGatewayError = gwStatus.error ?? gatewayActionError ?? null;
 
   const handleRetry = useCallback(() => {
     onRetryConnect?.();
@@ -55,9 +58,12 @@ export function TopBar({ activePage, status, gwStatus, onRetryConnect }: TopBarP
             <span className={`statusDot ${isRunning ? "ok" : status === "error" ? "danger" : "muted"}`} />
             {isRunning ? "Node running" : status}
           </div>
-          <div className={`pill ${isConnected ? "ok" : isPairing ? "warn" : "muted"}`}>
+          <div
+            className={`pill ${isConnected ? "ok" : isPairing ? "warn" : isError ? "danger" : "muted"}`}
+            title={effectiveGatewayError ?? undefined}
+          >
             <Icon name="link" size={11} />
-            {isConnected ? "Connected" : isPairing ? "Pairing" : "Disconnected"}
+            {isConnected ? "Connected" : isPairing ? "Pairing" : isError ? "Error" : "Disconnected"}
           </div>
         </div>
       </div>
@@ -75,6 +81,20 @@ export function TopBar({ activePage, status, gwStatus, onRetryConnect }: TopBarP
               Device: {gwStatus.deviceId.slice(0, 16)}...
             </span>
           )}
+          {onRetryConnect && (
+            <button className="pairing-banner-retry" onClick={handleRetry}>
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+
+      {!isPairing && effectiveGatewayError && (
+        <div className="pairing-banner">
+          <Icon name="alertTriangle" size={14} />
+          <span className="flex-1">
+            <strong>Gateway error</strong>: {effectiveGatewayError}
+          </span>
           {onRetryConnect && (
             <button className="pairing-banner-retry" onClick={handleRetry}>
               Retry
