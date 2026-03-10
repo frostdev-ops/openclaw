@@ -23,6 +23,7 @@ import { logsHandlers } from "./server-methods/logs.js";
 import { metricsHandlers } from "./server-methods/metrics.js";
 import { modelsHandlers } from "./server-methods/models.js";
 import { networkHandlers } from "./server-methods/network.js";
+import { nodePendingHandlers } from "./server-methods/nodes-pending.js";
 import { nodeHandlers } from "./server-methods/nodes.js";
 import { pushHandlers } from "./server-methods/push.js";
 import { sendHandlers } from "./server-methods/send.js";
@@ -92,6 +93,7 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
   ...systemHandlers,
   ...updateHandlers,
   ...nodeHandlers,
+  ...nodePendingHandlers,
   ...pushHandlers,
   ...sendHandlers,
   ...usageHandlers,
